@@ -12,7 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8767
+EXPOSE 8787
 
-# Start Tor in background and run backend script
-CMD tor & python backend.py
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+CMD ./entrypoint.sh
