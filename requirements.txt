@@ -1,4 +1,3 @@
 fastapi
 uvicorn
-httpx[socks]
-requests
+curl_cffi

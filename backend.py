@@ -1,12 +1,22 @@
 import os
-import httpx
+import json
 from fastapi import FastAPI, Request, Response, HTTPException
+from curl_cffi import requests as cffi_requests
 
 app = FastAPI()
 
 INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
-OPENCODE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
+OPENCODE_URL = "https://opencode.ai/zen/v1/chat/completions"
 TOR_PROXY = "socks5://127.0.0.1:9050"
+
+VALID_MODELS = {
+    "minimax-m3-free",
+    "big-pickle",
+    "deepseek-v4-flash-free",
+    "ling-3.0-flash-free",
+    "mimo-v2.5-free",
+    "nemotron-3-super-free",
+}
 
 @app.get("/")
 async def health():
@@ -18,32 +28,35 @@ async def proxy_chat(request: Request):
     if INTERNAL_SECRET and incoming_secret != INTERNAL_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized request source")
 
-    body = await request.body()
-    
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "OpenCode-Agent/1.0"
-    }
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if body.get("model") not in VALID_MODELS:
+        body["model"] = "minimax-m3-free"
+
+    headers = {"Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(proxy=TOR_PROXY, timeout=120.0) as client:
-            resp = await client.post(OPENCODE_URL, content=body, headers=headers)
-            return Response(
-                content=resp.content, 
-                status_code=resp.status_code, 
-                headers={"Content-Type": "application/json"}
-            )
+        r = cffi_requests.post(
+            OPENCODE_URL,
+            headers=headers,
+            json=body,
+            proxies={"http": TOR_PROXY, "https": TOR_PROXY},
+            impersonate="chrome131",
+            timeout=120,
+        )
+        return Response(content=r.content, status_code=r.status_code, headers={"Content-Type": "application/json"})
     except Exception as tor_err:
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(OPENCODE_URL, content=body, headers=headers)
-                return Response(
-                    content=resp.content, 
-                    status_code=resp.status_code, 
-                    headers={"Content-Type": "application/json"}
-                )
-        except Exception as fallback_err:
-            raise HTTPException(
-                status_code=502, 
-                detail=f"Upstream provider error: {str(fallback_err)}"
+            r = cffi_requests.post(
+                OPENCODE_URL,
+                headers=headers,
+                json=body,
+                impersonate="chrome131",
+                timeout=120,
             )
+            return Response(content=r.content, status_code=r.status_code, headers={"Content-Type": "application/json"})
+        except Exception as fallback_err:
+            raise HTTPException(status_code=502, detail=f"Upstream provider error: {str(fallback_err)}")
