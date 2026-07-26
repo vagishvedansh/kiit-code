@@ -42,7 +42,7 @@ export async function onRequestPost(context) {
   const backendUrl = `${env.RENDER_BACKEND_URL}/v1/chat/completions`;
 
   const proxyHeaders = new Headers(request.headers);
-  proxyHeaders.set("X-Kiit-Key", apiKey);
+  proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
 
   try {
     const renderResponse = await fetch(backendUrl, {
