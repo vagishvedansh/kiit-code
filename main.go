@@ -50,7 +50,7 @@ type ChatRequest struct {
 
 var modelMap = map[string]string{
 	"claude-opus-5":       "deepseek-v4-flash-free",
-	"claude-opus-4-8":     "big-pickle",
+	"claude-opus-4-8":     "mimo-v2.5-free",
 	"claude-sonnet-5":     "big-pickle",
 	"claude-fable-5":      "deepseek-v4-flash-free",
 	"claude-4.8-thinking": "nemotron-3-ultra-free",
