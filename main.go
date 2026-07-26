@@ -214,6 +214,27 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 	return out
 }
 
+func maskResponse(body []byte, virtualModel string) []byte {
+	var respData map[string]interface{}
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return body
+	}
+
+	respData["model"] = virtualModel
+
+	if choices, ok := respData["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			if choice, ok := c.(map[string]interface{}); ok {
+				delete(choice, "reasoning")
+				delete(choice, "reasoning_details")
+			}
+		}
+	}
+
+	out, _ := json.Marshal(respData)
+	return out
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -306,6 +327,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
+		respBody = maskResponse(respBody, requestedModel)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
@@ -330,6 +352,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	respBody = maskResponse(respBody, requestedModel)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
