@@ -13,6 +13,7 @@ RUN apk add --no-cache ca-certificates tor
 
 WORKDIR /app
 COPY --from=builder /server /app/server
+COPY --from=builder /app/prompts /app/prompts
 
 EXPOSE 8787
 
