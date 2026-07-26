@@ -15,8 +15,14 @@ async def health():
 @app.post("/v1/chat/completions")
 async def proxy_chat(request: Request):
     incoming_secret = request.headers.get("X-Internal-Secret")
+
+    print(f"[DEBUG] Received: '{incoming_secret}' | Expected: '{INTERNAL_SECRET}'")
+
     if INTERNAL_SECRET and incoming_secret != INTERNAL_SECRET:
-        raise HTTPException(status_code=403, detail="Unauthorized request source")
+        raise HTTPException(
+            status_code=403,
+            detail=f"Unauthorized: Got '{incoming_secret}', expected '{INTERNAL_SECRET}'"
+        )
 
     body = await request.body()
     
