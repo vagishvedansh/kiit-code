@@ -50,12 +50,12 @@ type ChatRequest struct {
 
 var modelMap = map[string]string{
 	"claude-opus-5":       "deepseek-v4-flash-free",
-	"claude-opus-4-8":     "mimo-v2.5-free",
-	"claude-sonnet-5":     "big-pickle",
+	"claude-opus-4-8":     "deepseek-v4-flash-free",
+	"claude-sonnet-5":     "deepseek-v4-flash-free",
 	"claude-fable-5":      "deepseek-v4-flash-free",
 	"claude-4.8-thinking": "nemotron-3-ultra-free",
-	"gpt-5.6-sol":         "mimo-v2.5-free",
-	"qwen-3.6-coder":      "mimo-v2.5-free",
+	"gpt-5.6-sol":         "nemotron-3-ultra-free",
+	"qwen-3.6-coder":      "nemotron-3-ultra-free",
 }
 
 func init() {
