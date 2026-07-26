@@ -45,10 +45,16 @@ export async function onRequestPost(context) {
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
 
+  const modelCodes = {
+    "op5": "claude-opus-4-8", "sn5": "claude-sonnet-5", "fb5": "claude-fable-5",
+    "th8": "claude-4.8-thinking", "g56": "gpt-5.6-sol", "qw3": "qwen-3.6-coder"
+  };
+
   let bodyToSend;
   try {
     const parsedBody = await request.json();
-    const modelName = parsedBody.model || "";
+    let modelName = parsedBody.model || "";
+    modelName = modelCodes[modelName] || modelName;
     if (modelName) {
       proxyHeaders.set("X-Model-Name", modelName);
       parsedBody.model = "default";
