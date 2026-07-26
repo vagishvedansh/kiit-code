@@ -51,11 +51,11 @@ type ChatRequest struct {
 var modelMap = map[string]string{
 	"claude-opus-5":       "big-pickle",
 	"claude-opus-4-8":     "big-pickle",
-	"claude-sonnet-5":     "deepseek-v4-flash-free",
+	"claude-sonnet-5":     "big-pickle",
 	"claude-fable-5":      "deepseek-v4-flash-free",
-	"claude-4.8-thinking": "mimo-v2.5-free",
-	"gpt-5.6-sol":         "big-pickle",
-	"qwen-3.6-coder":      "deepseek-v4-flash-free",
+	"claude-4.8-thinking": "nemotron-3-super-free",
+	"gpt-5.6-sol":         "mimo-v2.5-free",
+	"qwen-3.6-coder":      "mimo-v2.5-free",
 }
 
 func init() {
