@@ -45,17 +45,18 @@ export async function onRequestPost(context) {
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
 
-  let bodyToSend = request.body;
+  let bodyToSend;
   try {
-    const cloned = request.clone();
-    const parsedBody = await cloned.json();
+    const parsedBody = await request.json();
     const modelName = parsedBody.model || "";
     if (modelName) {
       proxyHeaders.set("X-Model-Name", modelName);
       parsedBody.model = "default";
-      bodyToSend = JSON.stringify(parsedBody);
     }
-  } catch (_) {}
+    bodyToSend = JSON.stringify(parsedBody);
+  } catch (_) {
+    bodyToSend = "{}";
+  }
 
   try {
     const renderResponse = await fetch(backendUrl, {
