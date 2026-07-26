@@ -44,11 +44,11 @@ type ChatRequest struct {
 }
 
 var modelMap = map[string]string{
-	"claude-opus-5":     "mimo-auto",
-	"claude-sonnet-5":   "nemotron-3-super-free",
-	"claude-fable-5":    "deepseek-v4-flash-free",
-	"gpt-5.6-sol":       "big-pickle",
-	"qwen-3.6-coder":    "mimo-v2.5-free",
+	"claude-opus-5":        "mimo-auto",
+	"claude-sonnet-5":      "big-pickle",
+	"claude-fable-5":       "deepseek-v4-flash-free",
+	"claude-4.8-thinking":  "mimo-v2.5-free",
+	"qwen-3.6-coder":       "ling-3.0-flash-free",
 }
 
 func init() {
@@ -68,16 +68,16 @@ func main() {
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
 
-	log.Printf("[INFO] Engine active with native Xiaomi MiMo SSE stream on port %s", port)
+	log.Printf("[INFO] Proxy active on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatalf("[FATAL] Server error: %v", err)
+		log.Fatalf("[FATAL] Server crash: %v", err)
 	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"running","engine":"go-mimo-native"}`))
+	w.Write([]byte(`{"status":"running","engine":"go-kiitcode-core"}`))
 }
 
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +156,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, `{"error":"Failed to read body"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"Failed to read request body"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
@@ -175,7 +175,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if targetModel == "mimo-auto" {
 		jwt, err := mimoAuth.GetJWT()
 		if err != nil {
-			http.Error(w, `{"error":"Failed to bootstrap Xiaomi MiMo token"}`, http.StatusBadGateway)
+			http.Error(w, `{"error":"Failed to bootstrap Xiaomi MiMo session"}`, http.StatusBadGateway)
 			return
 		}
 
@@ -185,7 +185,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		client := &http.Client{Timeout: 120 * time.Second}
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
-			http.Error(w, `{"error":"Failed to build upstream request"}`, http.StatusInternalServerError)
+			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
 			return
 		}
 
