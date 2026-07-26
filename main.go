@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,18 +49,18 @@ type ChatRequest struct {
 }
 
 var modelMap = map[string]string{
-	"claude-opus-5":        "mimo-auto",
-	"claude-sonnet-5":      "big-pickle",
-	"claude-fable-5":       "deepseek-v4-flash-free",
-	"gpt-5.6-sol":          "big-pickle",
-	"claude-4.8-thinking":  "mimo-v2.5-free",
-	"qwen-3.6-coder":       "ling-3.0-flash-free",
+	"claude-opus-4-8":     "mimo-auto",
+	"claude-sonnet-5":     "big-pickle",
+	"claude-fable-5":      "deepseek-v4-flash-free",
+	"claude-4.8-thinking": "mimo-v2.5-free",
+	"gpt-5.6-sol":         "big-pickle",
+	"qwen-3.6-coder":      "ling-3.0-flash-free",
 }
 
 func init() {
-	bytes := make([]byte, 10)
-	rand.Read(bytes)
-	sessionAffinity = "ses_" + hex.EncodeToString(bytes)
+	b := make([]byte, 10)
+	rand.Read(b)
+	sessionAffinity = "ses_" + hex.EncodeToString(b)
 }
 
 func main() {
@@ -73,7 +74,7 @@ func main() {
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
 
-	log.Printf("[INFO] Proxy active on port %s", port)
+	log.Printf("[INFO] Proxy Engine listening on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("[FATAL] Server crash: %v", err)
 	}
@@ -99,6 +100,134 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{"object": "list", "data": data})
+}
+
+func normalizeModel(reqModel string) string {
+	m := strings.ToLower(strings.TrimSpace(reqModel))
+	switch {
+	case strings.Contains(m, "claud") && strings.Contains(m, "4.8") && strings.Contains(m, "think"):
+		return "claude-4.8-thinking"
+	case strings.Contains(m, "claud") && (strings.Contains(m, "4.8") || strings.Contains(m, "opus") || strings.Contains(m, "5")):
+		return "claude-opus-4-8"
+	case strings.Contains(m, "claud") && strings.Contains(m, "sonnet"):
+		return "claude-sonnet-5"
+	case strings.Contains(m, "claud") && strings.Contains(m, "fable"):
+		return "claude-fable-5"
+	case strings.Contains(m, "gpt") || strings.Contains(m, "pickle"):
+		return "gpt-5.6-sol"
+	case strings.Contains(m, "qwen") || strings.Contains(m, "coder"):
+		return "qwen-3.6-coder"
+	default:
+		return "claude-opus-4-8"
+	}
+}
+
+func getSystemPrompt(virtualModel string) string {
+	promptCacheMu.RLock()
+	cached, found := promptCache[virtualModel]
+	promptCacheMu.RUnlock()
+
+	if found && cached != "" {
+		return cached
+	}
+
+	promptCacheMu.Lock()
+	defer promptCacheMu.Unlock()
+
+	if cached, found := promptCache[virtualModel]; found && cached != "" {
+		return cached
+	}
+
+	filePath := filepath.Join(promptDir, virtualModel+".md")
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		fallbackPath := filepath.Join(promptDir, "claude-opus-4-8.md")
+		content, err = os.ReadFile(fallbackPath)
+		if err != nil {
+			log.Printf("[WARN] Failed to load prompt file at %s and fallback", filePath)
+			return ""
+		}
+	}
+
+	promptStr := string(content)
+	promptCache[virtualModel] = promptStr
+	log.Printf("[INFO] System prompt loaded for model: %s", virtualModel)
+	return promptStr
+}
+
+func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
+	prompt := getSystemPrompt(virtualModel)
+	if prompt == "" {
+		return bodyBytes
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return bodyBytes
+	}
+
+	messages, ok := payload["messages"].([]interface{})
+	if !ok {
+		return bodyBytes
+	}
+
+	systemMsg := map[string]interface{}{
+		"role":    "system",
+		"content": prompt,
+	}
+
+	if len(messages) > 0 {
+		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
+			userSys, _ := first["content"].(string)
+			first["content"] = prompt + "\n\n[User Context]: " + userSys
+			payload["messages"] = messages
+			out, _ := json.Marshal(payload)
+			return out
+		}
+	}
+
+	newMessages := append([]interface{}{systemMsg}, messages...)
+	payload["messages"] = newMessages
+
+	out, _ := json.Marshal(payload)
+	return out
+}
+
+func sanitizeResponseBody(body []byte) []byte {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+
+	choices, ok := raw["choices"].([]interface{})
+	if !ok {
+		return body
+	}
+
+	for _, c := range choices {
+		choiceMap, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		delete(choiceMap, "reasoning_content")
+		delete(choiceMap, "reasoning")
+
+		if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
+			delete(msg, "reasoning_content")
+			delete(msg, "reasoning")
+		}
+		if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+			delete(delta, "reasoning_content")
+			delete(delta, "reasoning")
+		}
+	}
+
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func (m *MimoTokenCache) GetJWT() (string, error) {
@@ -146,95 +275,6 @@ func (m *MimoTokenCache) GetJWT() (string, error) {
 	return m.jwt, nil
 }
 
-func getSystemPrompt(virtualModel string) string {
-	promptCacheMu.RLock()
-	cachedPrompt, found := promptCache[virtualModel]
-	promptCacheMu.RUnlock()
-
-	if found {
-		return cachedPrompt
-	}
-
-	promptCacheMu.Lock()
-	defer promptCacheMu.Unlock()
-
-	if cachedPrompt, found := promptCache[virtualModel]; found {
-		return cachedPrompt
-	}
-
-	filePath := filepath.Join(promptDir, virtualModel+".md")
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		log.Printf("[WARN] No system prompt found at %s", filePath)
-		promptCache[virtualModel] = ""
-		return ""
-	}
-
-	promptStr := string(content)
-	promptCache[virtualModel] = promptStr
-	log.Printf("[INFO] Loaded system prompt file: %s", filePath)
-	return promptStr
-}
-
-func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
-	prompt := getSystemPrompt(virtualModel)
-	if prompt == "" {
-		return bodyBytes
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		return bodyBytes
-	}
-
-	messages, ok := payload["messages"].([]interface{})
-	if !ok {
-		return bodyBytes
-	}
-
-	systemMsg := map[string]interface{}{
-		"role":    "system",
-		"content": prompt,
-	}
-
-	if len(messages) > 0 {
-		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
-			userSys, _ := first["content"].(string)
-			first["content"] = prompt + "\n\n[User Context]: " + userSys
-			payload["messages"] = messages
-			out, _ := json.Marshal(payload)
-			return out
-		}
-	}
-
-	newMessages := append([]interface{}{systemMsg}, messages...)
-	payload["messages"] = newMessages
-
-	out, _ := json.Marshal(payload)
-	return out
-}
-
-func maskResponse(body []byte, virtualModel string) []byte {
-	var respData map[string]interface{}
-	if err := json.Unmarshal(body, &respData); err != nil {
-		return body
-	}
-
-	respData["model"] = virtualModel
-
-	if choices, ok := respData["choices"].([]interface{}); ok {
-		for _, c := range choices {
-			if choice, ok := c.(map[string]interface{}); ok {
-				delete(choice, "reasoning")
-				delete(choice, "reasoning_details")
-			}
-		}
-	}
-
-	out, _ := json.Marshal(respData)
-	return out
-}
-
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -256,16 +296,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var reqPayload ChatRequest
-	requestedModel := "claude-fable-5"
+	requestedModel := "claude-opus-4-8"
 	if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil && reqPayload.Model != "" {
 		requestedModel = reqPayload.Model
 	}
 
-	bodyBytes = injectPrompt(bodyBytes, requestedModel)
+	virtualModel := normalizeModel(requestedModel)
 
-	targetModel := modelMap[requestedModel]
+	bodyBytes = injectPrompt(bodyBytes, virtualModel)
+
+	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "deepseek-v4-flash-free"
+		targetModel = "mimo-auto"
 	}
 
 	if targetModel == "mimo-auto" {
@@ -275,10 +317,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var payloadMap map[string]interface{}
-		json.Unmarshal(bodyBytes, &payloadMap)
-		payloadMap["model"] = "mimo-auto"
-		newBody, _ := json.Marshal(payloadMap)
+		reqPayload.Model = "mimo-auto"
+		var tempPayload map[string]interface{}
+		json.Unmarshal(bodyBytes, &tempPayload)
+		tempPayload["model"] = "mimo-auto"
+		newBody, _ := json.Marshal(tempPayload)
 
 		client := &http.Client{Timeout: 120 * time.Second}
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
@@ -327,17 +370,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
-		respBody = maskResponse(respBody, requestedModel)
+		sanitizedBody := sanitizeResponseBody(respBody)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
+		w.Write(sanitizedBody)
 		return
 	}
 
-	var payloadMap map[string]interface{}
-	json.Unmarshal(bodyBytes, &payloadMap)
-	payloadMap["model"] = targetModel
-	newBody, _ := json.Marshal(payloadMap)
+	var tempPayload map[string]interface{}
+	json.Unmarshal(bodyBytes, &tempPayload)
+	tempPayload["model"] = targetModel
+	newBody, _ := json.Marshal(tempPayload)
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
@@ -352,8 +396,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	respBody = maskResponse(respBody, requestedModel)
+	sanitizedBody := sanitizeResponseBody(respBody)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
+	w.Write(sanitizedBody)
 }
