@@ -46,7 +46,7 @@ export async function onRequestPost(context) {
   proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
 
   const modelCodes = {
-    "op5": "claude-opus-4-8", "sn5": "claude-sonnet-5", "fb5": "claude-fable-5",
+    "op5": "claude-opus-5", "sn5": "claude-sonnet-5", "fb5": "claude-fable-5",
     "th8": "claude-4.8-thinking", "g56": "gpt-5.6-sol", "qw3": "qwen-3.6-coder"
   };
 

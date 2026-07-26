@@ -49,6 +49,7 @@ type ChatRequest struct {
 }
 
 var modelMap = map[string]string{
+	"claude-opus-5":       "big-pickle",
 	"claude-opus-4-8":     "big-pickle",
 	"claude-sonnet-5":     "deepseek-v4-flash-free",
 	"claude-fable-5":      "deepseek-v4-flash-free",
@@ -111,7 +112,9 @@ func normalizeModel(reqModel string) string {
 		return "claude-fable-5"
 	case strings.Contains(m, "claud") && strings.Contains(m, "4.8") && strings.Contains(m, "think"):
 		return "claude-4.8-thinking"
-	case strings.Contains(m, "claud") && (strings.Contains(m, "4.8") || strings.Contains(m, "opus") || strings.Contains(m, "5")):
+	case strings.Contains(m, "claud") && strings.Contains(m, "opus"):
+		return "claude-opus-5"
+	case strings.Contains(m, "claud") && strings.Contains(m, "4.8"):
 		return "claude-opus-4-8"
 	case strings.Contains(m, "gpt") || strings.Contains(m, "pickle"):
 		return "gpt-5.6-sol"
@@ -141,7 +144,7 @@ func getSystemPrompt(virtualModel string) string {
 	filePath := filepath.Join(promptDir, virtualModel+".md")
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		fallbackPath := filepath.Join(promptDir, "claude-opus-4-8.md")
+		fallbackPath := filepath.Join(promptDir, "claude-opus-5.md")
 		content, err = os.ReadFile(fallbackPath)
 		if err != nil {
 			log.Printf("[WARN] Failed to load prompt file at %s and fallback", filePath)
@@ -310,7 +313,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var reqPayload ChatRequest
-	requestedModel := "claude-opus-4-8"
+	requestedModel := "claude-opus-5"
 
 	headerModel := r.Header.Get("X-Model-Name")
 	if headerModel != "" {
