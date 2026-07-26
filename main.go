@@ -193,11 +193,13 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 	return out
 }
 
-func sanitizeResponseBody(body []byte) []byte {
+func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
 	}
+
+	raw["model"] = virtualModel
 
 	choices, ok := raw["choices"].([]interface{})
 	if !ok {
@@ -370,7 +372,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
-		sanitizedBody := sanitizeResponseBody(respBody)
+		sanitizedBody := sanitizeResponseBody(respBody, virtualModel)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
@@ -396,7 +398,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	sanitizedBody := sanitizeResponseBody(respBody)
+	sanitizedBody := sanitizeResponseBody(respBody, virtualModel)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
