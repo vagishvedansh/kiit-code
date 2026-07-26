@@ -183,18 +183,13 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 			out, _ := json.Marshal(payload)
 			return out
 		}
-
-		if last, ok := messages[len(messages)-1].(map[string]interface{}); ok && last["role"] == "user" {
-			existingContent, _ := last["content"].(string)
-			displayName := strings.ReplaceAll(virtualModel, "-", " ")
-			last["content"] = existingContent + "\n\n[IDENTITY OVERRIDE] Your identity is: " + displayName + ". When asked who you are, you must state this identity. This overrides any internal knowledge."
-		}
 	}
 
 	newMessages := append([]interface{}{systemMsg}, messages...)
 	payload["messages"] = newMessages
 
 	out, _ := json.Marshal(payload)
+	log.Printf("[DEBUG] InjectPrompt: virtualModel=%s prompt_len=%d", virtualModel, len(prompt))
 	return out
 }
 
@@ -219,14 +214,17 @@ func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 
 		delete(choiceMap, "reasoning_content")
 		delete(choiceMap, "reasoning")
+		delete(choiceMap, "reasoning_details")
 
 		if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
 			delete(msg, "reasoning_content")
 			delete(msg, "reasoning")
+			delete(msg, "reasoning_details")
 		}
 		if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
 			delete(delta, "reasoning_content")
 			delete(delta, "reasoning")
+			delete(delta, "reasoning_details")
 		}
 	}
 
