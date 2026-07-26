@@ -105,14 +105,14 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 func normalizeModel(reqModel string) string {
 	m := strings.ToLower(strings.TrimSpace(reqModel))
 	switch {
-	case strings.Contains(m, "claud") && strings.Contains(m, "4.8") && strings.Contains(m, "think"):
-		return "claude-4.8-thinking"
-	case strings.Contains(m, "claud") && (strings.Contains(m, "4.8") || strings.Contains(m, "opus") || strings.Contains(m, "5")):
-		return "claude-opus-4-8"
 	case strings.Contains(m, "claud") && strings.Contains(m, "sonnet"):
 		return "claude-sonnet-5"
 	case strings.Contains(m, "claud") && strings.Contains(m, "fable"):
 		return "claude-fable-5"
+	case strings.Contains(m, "claud") && strings.Contains(m, "4.8") && strings.Contains(m, "think"):
+		return "claude-4.8-thinking"
+	case strings.Contains(m, "claud") && (strings.Contains(m, "4.8") || strings.Contains(m, "opus") || strings.Contains(m, "5")):
+		return "claude-opus-4-8"
 	case strings.Contains(m, "gpt") || strings.Contains(m, "pickle"):
 		return "gpt-5.6-sol"
 	case strings.Contains(m, "qwen") || strings.Contains(m, "coder"):
