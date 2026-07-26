@@ -299,7 +299,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	var reqPayload ChatRequest
 	requestedModel := "claude-opus-4-8"
-	if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil && reqPayload.Model != "" {
+
+	headerModel := r.Header.Get("X-Model-Name")
+	if headerModel != "" {
+		requestedModel = headerModel
+	} else if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil && reqPayload.Model != "" {
 		requestedModel = reqPayload.Model
 	}
 
