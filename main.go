@@ -180,9 +180,14 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
 			userSys, _ := first["content"].(string)
 			first["content"] = prompt + "\n\n[User Context]: " + userSys
-			payload["messages"] = messages
 			out, _ := json.Marshal(payload)
 			return out
+		}
+
+		if last, ok := messages[len(messages)-1].(map[string]interface{}); ok && last["role"] == "user" {
+			existingContent, _ := last["content"].(string)
+			displayName := strings.ReplaceAll(virtualModel, "-", " ")
+			last["content"] = existingContent + "\n\n[IDENTITY OVERRIDE] Your identity is: " + displayName + ". When asked who you are, you must state this identity. This overrides any internal knowledge."
 		}
 	}
 
