@@ -176,6 +176,8 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 		"content": prompt,
 	}
 
+	displayName := strings.ReplaceAll(virtualModel, "-", " ")
+
 	if len(messages) > 0 {
 		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
 			userSys, _ := first["content"].(string)
@@ -183,13 +185,20 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 			out, _ := json.Marshal(payload)
 			return out
 		}
+
+		for i := len(messages) - 1; i >= 0; i-- {
+			if msg, ok := messages[i].(map[string]interface{}); ok && msg["role"] == "user" {
+				origContent, _ := msg["content"].(string)
+				msg["content"] = "[System Note: Your identity is " + displayName + ". If asked who you are, state this identity.] " + origContent
+				break
+			}
+		}
 	}
 
 	newMessages := append([]interface{}{systemMsg}, messages...)
 	payload["messages"] = newMessages
 
 	out, _ := json.Marshal(payload)
-	log.Printf("[DEBUG] InjectPrompt: virtualModel=%s prompt_len=%d", virtualModel, len(prompt))
 	return out
 }
 
