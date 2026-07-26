@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -19,11 +20,14 @@ const (
 	mimoBootstrapURL = "https://api.xiaomimimo.com/api/free-ai/bootstrap"
 	mimoChatURL      = "https://api.xiaomimimo.com/api/free-ai/openai/chat"
 	mimoClientHash   = "b489347449c0cf5a44bf0109fa3a6a7516cba72f1b507ade168365d6c80427e4"
+	promptDir        = "prompts"
 )
 
 var (
 	internalSecret  string
 	sessionAffinity string
+	promptCache     = make(map[string]string)
+	promptCacheMu   sync.RWMutex
 )
 
 type MimoTokenCache struct {
@@ -141,6 +145,74 @@ func (m *MimoTokenCache) GetJWT() (string, error) {
 	return m.jwt, nil
 }
 
+func getSystemPrompt(virtualModel string) string {
+	promptCacheMu.RLock()
+	cachedPrompt, found := promptCache[virtualModel]
+	promptCacheMu.RUnlock()
+
+	if found {
+		return cachedPrompt
+	}
+
+	promptCacheMu.Lock()
+	defer promptCacheMu.Unlock()
+
+	if cachedPrompt, found := promptCache[virtualModel]; found {
+		return cachedPrompt
+	}
+
+	filePath := filepath.Join(promptDir, virtualModel+".md")
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Printf("[WARN] No system prompt found at %s", filePath)
+		promptCache[virtualModel] = ""
+		return ""
+	}
+
+	promptStr := string(content)
+	promptCache[virtualModel] = promptStr
+	log.Printf("[INFO] Loaded system prompt file: %s", filePath)
+	return promptStr
+}
+
+func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
+	prompt := getSystemPrompt(virtualModel)
+	if prompt == "" {
+		return bodyBytes
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return bodyBytes
+	}
+
+	messages, ok := payload["messages"].([]interface{})
+	if !ok {
+		return bodyBytes
+	}
+
+	systemMsg := map[string]interface{}{
+		"role":    "system",
+		"content": prompt,
+	}
+
+	if len(messages) > 0 {
+		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
+			userSys, _ := first["content"].(string)
+			first["content"] = prompt + "\n\n[User Context]: " + userSys
+			payload["messages"] = messages
+			out, _ := json.Marshal(payload)
+			return out
+		}
+	}
+
+	newMessages := append([]interface{}{systemMsg}, messages...)
+	payload["messages"] = newMessages
+
+	out, _ := json.Marshal(payload)
+	return out
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -167,6 +239,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		requestedModel = reqPayload.Model
 	}
 
+	bodyBytes = injectPrompt(bodyBytes, requestedModel)
+
 	targetModel := modelMap[requestedModel]
 	if targetModel == "" {
 		targetModel = "deepseek-v4-flash-free"
@@ -179,8 +253,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		reqPayload.Model = "mimo-auto"
-		newBody, _ := json.Marshal(reqPayload)
+		var payloadMap map[string]interface{}
+		json.Unmarshal(bodyBytes, &payloadMap)
+		payloadMap["model"] = "mimo-auto"
+		newBody, _ := json.Marshal(payloadMap)
 
 		client := &http.Client{Timeout: 120 * time.Second}
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
@@ -235,8 +311,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqPayload.Model = targetModel
-	newBody, _ := json.Marshal(reqPayload)
+	var payloadMap map[string]interface{}
+	json.Unmarshal(bodyBytes, &payloadMap)
+	payloadMap["model"] = targetModel
+	newBody, _ := json.Marshal(payloadMap)
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
