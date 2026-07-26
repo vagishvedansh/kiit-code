@@ -51,6 +51,7 @@ var modelMap = map[string]string{
 	"claude-opus-5":        "mimo-auto",
 	"claude-sonnet-5":      "big-pickle",
 	"claude-fable-5":       "deepseek-v4-flash-free",
+	"gpt-5.6-sol":          "big-pickle",
 	"claude-4.8-thinking":  "mimo-v2.5-free",
 	"qwen-3.6-coder":       "ling-3.0-flash-free",
 }
