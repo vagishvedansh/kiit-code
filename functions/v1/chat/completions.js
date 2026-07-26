@@ -11,8 +11,9 @@ export async function onRequestPost(context) {
     });
   }
 
+  let user;
   try {
-    const user = await env.DB.prepare(
+    user = await env.DB.prepare(
       `SELECT u.credit_balance, k.is_active, k.id as key_id 
        FROM api_keys k 
        JOIN users u ON k.user_id = u.id 
@@ -51,9 +52,18 @@ export async function onRequestPost(context) {
       body: request.body,
     });
 
-    return new Response(renderResponse.body, {
+    const responseData = await renderResponse.json();
+    const tokensUsed = responseData.usage?.total_tokens || 0;
+
+    if (tokensUsed > 0) {
+      env.DB.prepare(
+        `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
+      ).bind(tokensUsed * 0.000001, user.key_id).run();
+    }
+
+    return new Response(JSON.stringify(responseData), {
       status: renderResponse.status,
-      headers: renderResponse.headers,
+      headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
     return new Response(JSON.stringify({ error: "Failed to connect to execution proxy backend" }), {
