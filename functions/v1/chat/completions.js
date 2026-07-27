@@ -51,10 +51,8 @@ export async function onRequestPost(context) {
   };
 
   let bodyToSend = "{}";
-  let isStreaming = false;
   try {
     const parsedBody = await request.json();
-    isStreaming = parsedBody.stream === true;
     let modelName = parsedBody.model || "";
     modelName = modelCodes[modelName] || modelName;
     if (modelName) {
@@ -70,17 +68,6 @@ export async function onRequestPost(context) {
       headers: proxyHeaders,
       body: bodyToSend,
     });
-
-    if (isStreaming) {
-      return new Response(renderResponse.body, {
-        status: renderResponse.status,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive"
-        },
-      });
-    }
 
     const responseData = await renderResponse.json();
     const usage = responseData.usage || {};
