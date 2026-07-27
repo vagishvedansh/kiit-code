@@ -208,35 +208,46 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
+		return []byte(`{"error":{"message":"Internal server error","type":"api_error","param":null,"code":"internal_error"}}`)
+	}
+
+	if _, hasErr := raw["error"]; hasErr {
+		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please try again.","type":"server_error","param":null,"code":"rate_limit_exceeded"}}`)
+	}
+
+	b := make([]byte, 12)
+	rand.Read(b)
+	randomID := hex.EncodeToString(b)
+
+	if strings.Contains(virtualModel, "claude") {
+		raw["id"] = "msg_" + randomID
+	} else {
+		raw["id"] = "chatcmpl-" + randomID
 	}
 
 	raw["model"] = virtualModel
+	delete(raw, "cost")
+	delete(raw, "provider")
+	delete(raw, "router")
 
-	choices, ok := raw["choices"].([]interface{})
-	if !ok {
-		return body
-	}
+	if choices, ok := raw["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			if choiceMap, ok := c.(map[string]interface{}); ok {
+				delete(choiceMap, "reasoning_content")
+				delete(choiceMap, "reasoning")
+				delete(choiceMap, "reasoning_details")
 
-	for _, c := range choices {
-		choiceMap, ok := c.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		delete(choiceMap, "reasoning_content")
-		delete(choiceMap, "reasoning")
-		delete(choiceMap, "reasoning_details")
-
-		if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
-			delete(msg, "reasoning_content")
-			delete(msg, "reasoning")
-			delete(msg, "reasoning_details")
-		}
-		if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
-			delete(delta, "reasoning_content")
-			delete(delta, "reasoning")
-			delete(delta, "reasoning_details")
+				if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
+					delete(msg, "reasoning_content")
+					delete(msg, "reasoning")
+					delete(msg, "reasoning_details")
+				}
+				if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+					delete(delta, "reasoning_content")
+					delete(delta, "reasoning")
+					delete(delta, "reasoning_details")
+				}
+			}
 		}
 	}
 
@@ -342,6 +353,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		var tempPayload map[string]interface{}
 		json.Unmarshal(bodyBytes, &tempPayload)
 		tempPayload["model"] = "mimo-auto"
+		if _, hasTemp := tempPayload["temperature"]; !hasTemp {
+			tempPayload["temperature"] = 0.3
+		}
 		newBody, _ := json.Marshal(tempPayload)
 
 		client := &http.Client{Timeout: 120 * time.Second}
@@ -402,6 +416,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var tempPayload map[string]interface{}
 	json.Unmarshal(bodyBytes, &tempPayload)
 	tempPayload["model"] = targetModel
+	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
+		switch virtualModel {
+		case "claude-opus-4-8":
+			tempPayload["temperature"] = 0.2
+		case "claude-sonnet-5":
+			tempPayload["temperature"] = 0.5
+		case "gpt-5.6-sol":
+			tempPayload["temperature"] = 0.7
+		default:
+			tempPayload["temperature"] = 0.3
+		}
+	}
 	newBody, _ := json.Marshal(tempPayload)
 
 	client := &http.Client{Timeout: 120 * time.Second}
