@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,8 +104,27 @@ func createFingerprintedClient() (tls_client.HttpClient, error) {
 		tls_client.WithClientProfile(profiles.Chrome_131),
 		tls_client.WithTimeoutSeconds(120),
 		tls_client.WithRandomTLSSettings(),
+		tls_client.WithProxyUrl("socks5://127.0.0.1:9050"),
 	}
 	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
+}
+
+func renewTorIP(controlAddr, controlPassword string) error {
+	conn, err := net.DialTimeout("tcp", controlAddr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Tor control port: %v", err)
+	}
+	defer conn.Close()
+
+	fmt.Fprintf(conn, "AUTHENTICATE \"%s\"\r\n", controlPassword)
+	buf := make([]byte, 512)
+	conn.Read(buf)
+
+	fmt.Fprintf(conn, "SIGNAL NEWNYM\r\n")
+	conn.Read(buf)
+
+	time.Sleep(1500 * time.Millisecond)
+	return nil
 }
 
 func main() {

@@ -17,4 +17,8 @@ COPY --from=builder /app/prompts /app/prompts
 
 EXPOSE 8787
 
+RUN echo "ControlPort 9051" > /etc/tor/torrc && \
+    echo "SOCKSPort 9050" >> /etc/tor/torrc && \
+    echo "CookieAuthentication 0" >> /etc/tor/torrc
+
 CMD tor & /app/server
