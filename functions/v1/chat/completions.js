@@ -109,7 +109,8 @@ export async function onRequestPost(context) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: "Failed to connect to execution proxy backend" }), {
+    console.error("Fetch error:", err.message, err.cause);
+    return new Response(JSON.stringify({ error: "Backend unreachable: " + err.message }), {
       status: 502,
       headers: { "Content-Type": "application/json" }
     });
