@@ -50,7 +50,7 @@ export async function onRequestPost(context) {
     "th8": "claude-4.8-thinking", "g56": "gpt-5.6-sol", "qw3": "qwen-3.6-coder"
   };
 
-  let bodyToSend;
+  let bodyToSend = "{}";
   let isStreaming = false;
   try {
     const parsedBody = await request.json();
@@ -62,9 +62,7 @@ export async function onRequestPost(context) {
       parsedBody.model = "default";
     }
     bodyToSend = JSON.stringify(parsedBody);
-  } catch (_) {
-    bodyToSend = "{}";
-  }
+  } catch (_) {}
 
   try {
     const renderResponse = await fetch(backendUrl, {
@@ -74,11 +72,13 @@ export async function onRequestPost(context) {
     });
 
     if (isStreaming) {
-
-    if (isStreaming) {
       return new Response(renderResponse.body, {
         status: renderResponse.status,
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        },
       });
     }
 
@@ -109,8 +109,7 @@ export async function onRequestPost(context) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error("Fetch error:", err.message, err.cause);
-    return new Response(JSON.stringify({ error: "Backend unreachable: " + err.message }), {
+    return new Response(JSON.stringify({ error: "Backend unreachable" }), {
       status: 502,
       headers: { "Content-Type": "application/json" }
     });
