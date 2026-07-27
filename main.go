@@ -104,6 +104,15 @@ func createFingerprintedClient() (tls_client.HttpClient, error) {
 		tls_client.WithClientProfile(profiles.Chrome_131),
 		tls_client.WithTimeoutSeconds(120),
 		tls_client.WithRandomTLSSettings(),
+	}
+	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
+}
+
+func createTorClient() (tls_client.HttpClient, error) {
+	options := []tls_client.HttpClientOption{
+		tls_client.WithClientProfile(profiles.Chrome_131),
+		tls_client.WithTimeoutSeconds(120),
+		tls_client.WithRandomTLSSettings(),
 		tls_client.WithProxyUrl("socks5://127.0.0.1:9050"),
 	}
 	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
