@@ -583,7 +583,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client := newTorClient()
+	client := newDirectClient()
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -598,7 +598,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode == 429 {
 		log.Printf("[WARN] Rate limited, rotating Tor IP...")
 		tryRotateIP()
-		client = newTorClient()
+		client = newDirectClient()
 		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		newReq.Header.Set("Content-Type", "application/json")
 		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
