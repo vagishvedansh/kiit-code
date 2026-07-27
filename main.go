@@ -10,15 +10,11 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	tls_client "github.com/bogdanfinn/tls-client"
-	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 const (
@@ -99,23 +95,8 @@ func generateSessionID() string {
 	return "ses_" + hex.EncodeToString(b)
 }
 
-func createFingerprintedClient() (tls_client.HttpClient, error) {
-	options := []tls_client.HttpClientOption{
-		tls_client.WithClientProfile(profiles.Chrome_131),
-		tls_client.WithTimeoutSeconds(120),
-		tls_client.WithRandomTLSSettings(),
-	}
-	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
-}
-
-func createTorClient() (tls_client.HttpClient, error) {
-	options := []tls_client.HttpClientOption{
-		tls_client.WithClientProfile(profiles.Chrome_131),
-		tls_client.WithTimeoutSeconds(120),
-		tls_client.WithRandomTLSSettings(),
-		tls_client.WithProxyUrl("socks5://127.0.0.1:9050"),
-	}
-	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
+func newHTTPClient() *http.Client {
+	return &http.Client{Timeout: 120 * time.Second}
 }
 
 func renewTorIP(controlAddr, controlPassword string) error {
@@ -430,11 +411,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
-		client, err := createFingerprintedClient()
-		if err != nil {
-			http.Error(w, `{"error":"Failed to create secure client"}`, http.StatusInternalServerError)
-			return
-		}
+		client := newHTTPClient()
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
@@ -498,11 +475,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client, err := createFingerprintedClient()
-	if err != nil {
-		http.Error(w, `{"error":"Failed to create secure client"}`, http.StatusInternalServerError)
-		return
-	}
+	client := newHTTPClient()
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
