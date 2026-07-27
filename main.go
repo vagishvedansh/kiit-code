@@ -158,26 +158,9 @@ func getSystemPrompt(virtualModel string) string {
 	return promptStr
 }
 
-func wrapUserMessages(messages []interface{}) []interface{} {
-	for _, msg := range messages {
-		msgMap, ok := msg.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if role, _ := msgMap["role"].(string); role == "user" {
-			if content, ok := msgMap["content"].(string); ok {
-				if !strings.HasPrefix(content, "<user_input>") {
-					msgMap["content"] = "<user_input>\n" + content + "\n</user_input>"
-				}
-			}
-		}
-	}
-	return messages
-}
-
 func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
-	prompt := getSystemPrompt(virtualModel)
-	if prompt == "" {
+	proxyPrompt := getSystemPrompt(virtualModel)
+	if proxyPrompt == "" {
 		return bodyBytes
 	}
 
@@ -191,22 +174,20 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 		return bodyBytes
 	}
 
-	messages = wrapUserMessages(messages)
-
-	systemMsg := map[string]interface{}{
-		"role":    "system",
-		"content": prompt,
-	}
-
 	if len(messages) > 0 {
 		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
-			userSys, _ := first["content"].(string)
-			first["content"] = prompt + "\n\n[User Context]: " + userSys
+			clientSys, _ := first["content"].(string)
+			first["content"] = proxyPrompt + "\n\n" + clientSys
+			payload["messages"] = messages
 			out, _ := json.Marshal(payload)
 			return out
 		}
 	}
 
+	systemMsg := map[string]interface{}{
+		"role":    "system",
+		"content": proxyPrompt,
+	}
 	newMessages := append([]interface{}{systemMsg}, messages...)
 	payload["messages"] = newMessages
 
