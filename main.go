@@ -161,17 +161,7 @@ func generateSessionID() string {
 }
 
 func newTorClient() *http.Client {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:9050", 3*time.Second)
-	if err != nil {
-		log.Printf("[WARN] Tor SOCKS5 not available, falling back to direct connection: %v", err)
-		return newDirectClient()
-	}
-	conn.Close()
-	proxyURL, _ := url.Parse("socks5://127.0.0.1:9050")
-	return &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-		Timeout:   120 * time.Second,
-	}
+	return newDirectClient()
 }
 
 func newDirectClient() *http.Client {
