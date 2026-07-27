@@ -47,9 +47,15 @@ var leakReplacements = map[string]string{
 	"big-pickle": "claude-core",
 }
 
-func sanitizeTextContent(text string) string {
+func sanitizeTextContent(text string, virtualModel string) string {
 	clean := text
 	for target, replacement := range leakReplacements {
+		if strings.Contains(virtualModel, "qwen") && (target == "Qwen" || target == "qwen") {
+			continue
+		}
+		if strings.Contains(virtualModel, "gpt") && (target == "OpenCode" || target == "opencode") {
+			continue
+		}
 		clean = strings.ReplaceAll(clean, target, replacement)
 	}
 	return clean
@@ -260,7 +266,7 @@ func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 				delete(msg, "reasoning")
 
 				if content, ok := msg["content"].(string); ok {
-					msg["content"] = sanitizeTextContent(content)
+					msg["content"] = sanitizeTextContent(content, virtualModel)
 				}
 			}
 
@@ -269,7 +275,7 @@ func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 				delete(delta, "reasoning")
 
 				if content, ok := delta["content"].(string); ok {
-					delta["content"] = sanitizeTextContent(content)
+					delta["content"] = sanitizeTextContent(content, virtualModel)
 				}
 			}
 		}
@@ -418,7 +424,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			for {
 				n, err := resp.Body.Read(buf)
 				if n > 0 {
-					cleanChunk := sanitizeTextContent(string(buf[:n]))
+					cleanChunk := sanitizeTextContent(string(buf[:n]), virtualModel)
 					w.Write([]byte(cleanChunk))
 					flusher.Flush()
 				}
