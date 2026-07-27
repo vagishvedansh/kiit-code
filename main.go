@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 const (
@@ -25,10 +28,9 @@ const (
 )
 
 var (
-	internalSecret  string
-	sessionAffinity string
-	promptCache     = make(map[string]string)
-	promptCacheMu   sync.RWMutex
+	internalSecret string
+	promptCache    = make(map[string]string)
+	promptCacheMu  sync.RWMutex
 )
 
 var leakReplacements = map[string]string{
@@ -88,10 +90,19 @@ var modelMap = map[string]string{
 	"qwen-3.6-coder":      "nemotron-3-ultra-free",
 }
 
-func init() {
-	b := make([]byte, 10)
+func generateSessionID() string {
+	b := make([]byte, 8)
 	rand.Read(b)
-	sessionAffinity = "ses_" + hex.EncodeToString(b)
+	return "ses_" + hex.EncodeToString(b)
+}
+
+func createFingerprintedClient() (tls_client.HttpClient, error) {
+	options := []tls_client.HttpClientOption{
+		tls_client.WithClientProfile(profiles.Chrome_131),
+		tls_client.WithTimeoutSeconds(120),
+		tls_client.WithRandomTLSSettings(),
+	}
+	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
 }
 
 func main() {
@@ -388,7 +399,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
-		client := &http.Client{Timeout: 120 * time.Second}
+		client, err := createFingerprintedClient()
+		if err != nil {
+			http.Error(w, `{"error":"Failed to create secure client"}`, http.StatusInternalServerError)
+			return
+		}
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
@@ -399,7 +414,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set("Authorization", "Bearer "+jwt)
 		upstreamReq.Header.Set("User-Agent", "mimocode/0.1.0 ai-sdk/provider-utils/4.0.23")
 		upstreamReq.Header.Set("X-Mimo-Source", "mimocode-cli-free")
-		upstreamReq.Header.Set("x-session-affinity", sessionAffinity)
+		upstreamReq.Header.Set("x-session-affinity", generateSessionID())
 
 		resp, err := client.Do(upstreamReq)
 		if err != nil {
@@ -452,7 +467,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client, err := createFingerprintedClient()
+	if err != nil {
+		http.Error(w, `{"error":"Failed to create secure client"}`, http.StatusInternalServerError)
+		return
+	}
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
