@@ -524,6 +524,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 			tempPayload["temperature"] = 0.1
 		}
+		delete(tempPayload, "stream")
 		newBody, _ := json.Marshal(tempPayload)
 
 		client := newTorClient()
@@ -587,6 +588,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 		tempPayload["temperature"] = 0.1
 	}
+	delete(tempPayload, "stream")
 	newBody, _ := json.Marshal(tempPayload)
 
 	client := newTorClient()
@@ -614,33 +616,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
 			return
 		}
-	}
-
-	if reqPayload.Stream && resp.StatusCode == http.StatusOK {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-			return
-		}
-
-		buf := make([]byte, 2048)
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				cleanChunk := sanitizeSSEChunk(string(buf[:n]), virtualModel)
-				w.Write([]byte(cleanChunk))
-				flusher.Flush()
-			}
-			if err != nil {
-				break
-			}
-		}
-		return
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
