@@ -1,15 +1,13 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync"
-
-	_ "modernc.org/sqlite"
 )
 
 type ModelPricing struct {
@@ -27,66 +25,61 @@ var pricingTable = map[string]ModelPricing{
 }
 
 type UserKey struct {
-	Key        string
-	Balance    float64
-	TotalSpent float64
-	IsActive   bool
+	Key        string  `json:"key"`
+	Balance    float64 `json:"balance"`
+	TotalSpent float64 `json:"total_spent"`
+	IsActive   bool    `json:"is_active"`
+}
+
+type KeyStore struct {
+	Keys map[string]*UserKey `json:"keys"`
 }
 
 type KeyManager struct {
-	db *sql.DB
-	mu sync.Mutex
+	mu   sync.Mutex
+	data *KeyStore
+	path string
 }
 
 var keyMgr *KeyManager
 
 func initKeyManager() {
-	var err error
-	keyMgr, err = NewKeyManager("keys.db")
+	km, err := NewKeyManager("keys.json")
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to initialize SQLite key database: %v", err)
+		log.Fatalf("[FATAL] Failed to initialize key store: %v", err)
 	}
+	keyMgr = km
 	keyMgr.AddBalance("sk-kiit-test-key-12345", 10.00)
 }
 
-func NewKeyManager(dbPath string) (*KeyManager, error) {
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, err
+func NewKeyManager(path string) (*KeyManager, error) {
+	data := &KeyStore{Keys: make(map[string]*UserKey)}
+	if f, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(f, data)
 	}
-	query := `CREATE TABLE IF NOT EXISTS api_keys (
-		key TEXT PRIMARY KEY,
-		balance REAL NOT NULL DEFAULT 0.0,
-		total_spent REAL NOT NULL DEFAULT 0.0,
-		is_active INTEGER NOT NULL DEFAULT 1
-	);`
-	if _, err := db.Exec(query); err != nil {
-		return nil, err
-	}
-	return &KeyManager{db: db}, nil
+	return &KeyManager{data: data, path: path}, nil
+}
+
+func (km *KeyManager) save() {
+	f, _ := json.MarshalIndent(km.data, "", "  ")
+	os.WriteFile(km.path, f, 0644)
 }
 
 func (km *KeyManager) AuthenticateAndCheckBalance(rawKey string) (*UserKey, error) {
 	km.mu.Lock()
 	defer km.mu.Unlock()
 
-	var uk UserKey
-	var active int
-	err := km.db.QueryRow("SELECT key, balance, total_spent, is_active FROM api_keys WHERE key = ?", rawKey).
-		Scan(&uk.Key, &uk.Balance, &uk.TotalSpent, &active)
-	if err == sql.ErrNoRows {
+	uk, ok := km.data.Keys[rawKey]
+	if !ok {
 		return nil, errors.New("invalid_api_key")
-	} else if err != nil {
-		return nil, err
 	}
-	uk.IsActive = active == 1
 	if !uk.IsActive {
 		return nil, errors.New("key_disabled")
 	}
 	if uk.Balance <= 0.0 {
 		return nil, errors.New("insufficient_balance")
 	}
-	return &uk, nil
+	return uk, nil
 }
 
 func CalculateCost(virtualModel string, promptTokens, completionTokens int) float64 {
@@ -102,23 +95,32 @@ func CalculateCost(virtualModel string, promptTokens, completionTokens int) floa
 func (km *KeyManager) DeductBalance(rawKey string, cost float64) error {
 	km.mu.Lock()
 	defer km.mu.Unlock()
-	tx, err := km.db.Begin()
-	if err != nil {
-		return err
+
+	uk, ok := km.data.Keys[rawKey]
+	if !ok {
+		return errors.New("key_not_found")
 	}
-	_, err = tx.Exec("UPDATE api_keys SET balance = balance - ?, total_spent = total_spent + ? WHERE key = ?", cost, cost, rawKey)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+	uk.Balance -= cost
+	uk.TotalSpent += cost
+	km.save()
+	return nil
 }
 
 func (km *KeyManager) AddBalance(rawKey string, amount float64) error {
 	km.mu.Lock()
 	defer km.mu.Unlock()
-	_, err := km.db.Exec("INSERT INTO api_keys (key, balance, total_spent, is_active) VALUES (?, ?, 0.0, 1) ON CONFLICT(key) DO UPDATE SET balance = balance + ?", rawKey, amount, amount)
-	return err
+
+	if uk, ok := km.data.Keys[rawKey]; ok {
+		uk.Balance += amount
+	} else {
+		km.data.Keys[rawKey] = &UserKey{
+			Key:      rawKey,
+			Balance:  amount,
+			IsActive: true,
+		}
+	}
+	km.save()
+	return nil
 }
 
 func writeError(w http.ResponseWriter, statusCode int, errCode, message string) {
