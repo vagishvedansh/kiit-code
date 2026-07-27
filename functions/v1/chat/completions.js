@@ -79,13 +79,18 @@ export async function onRequestPost(context) {
     const costDeducted = totalTokens * 0.000001;
 
     if (totalTokens > 0) {
-      await env.DB.prepare(
-        `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
-      ).bind(costDeducted, user.key_id).run();
+      const logId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      try {
+        await env.DB.prepare(
+          `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
+        ).bind(costDeducted, user.key_id).run();
 
-      await env.DB.prepare(
-        `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(crypto.randomUUID(), user.key_id, responseData.model || "unknown", promptTokens, completionTokens, costDeducted).run();
+        await env.DB.prepare(
+          `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(logId, user.key_id, responseData.model || "unknown", promptTokens, completionTokens, costDeducted).run();
+      } catch (billingErr) {
+        console.error("Billing error:", billingErr.message);
+      }
     }
 
     return new Response(JSON.stringify(responseData), {
