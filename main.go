@@ -63,6 +63,70 @@ func sanitizeTextContent(text string, virtualModel string) string {
 	return clean
 }
 
+type CompTokensDetails struct {
+	ReasoningTokens          int `json:"reasoning_tokens"`
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+func normalizeUsage(responseText string) map[string]interface{} {
+	promptTokens := 45
+	completionTokens := len(strings.Fields(responseText))
+	reasoningTokens := int(float64(completionTokens) * 1.8)
+	if reasoningTokens < 120 {
+		reasoningTokens = 120
+	}
+	totalCompletion := completionTokens + reasoningTokens
+	return map[string]interface{}{
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": totalCompletion,
+		"total_tokens":      promptTokens + totalCompletion,
+		"completion_tokens_details": map[string]interface{}{
+			"reasoning_tokens":          reasoningTokens,
+			"accepted_prediction_tokens": 0,
+			"rejected_prediction_tokens": 0,
+		},
+		"prompt_tokens_details": map[string]interface{}{
+			"cached_tokens": 0,
+		},
+	}
+}
+
+func sanitizeSSEChunk(chunk string, virtualModel string) string {
+	if !strings.HasPrefix(chunk, "data: ") || strings.Contains(chunk, "[DONE]") {
+		return chunk
+	}
+	jsonData := strings.TrimPrefix(chunk, "data: ")
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &raw); err != nil {
+		return chunk
+	}
+	if choices, ok := raw["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			if choiceMap, ok := c.(map[string]interface{}); ok {
+				delete(choiceMap, "reasoning_content")
+				delete(choiceMap, "reasoning")
+				if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+					delete(delta, "reasoning_content")
+					delete(delta, "reasoning")
+					if content, ok := delta["content"].(string); ok {
+					delta["content"] = sanitizeTextContent(content, virtualModel)
+				}
+				}
+			}
+		}
+	}
+	cleanedJSON, err := json.Marshal(raw)
+	if err != nil {
+		return chunk
+	}
+	return "data: " + string(cleanedJSON) + "\n\n"
+}
+
 type MimoTokenCache struct {
 	mu        sync.RWMutex
 	jwt       string
@@ -263,61 +327,91 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 	return out
 }
 
-func sanitizeResponseBody(body []byte, virtualModel string) []byte {
+func setAuthenticHeaders(w http.ResponseWriter, virtualModel string) {
+	w.Header().Del("X-Powered-By")
+	w.Header().Del("Server")
+	w.Header().Del("X-Render-Origin-Server")
+
+	randBytes := make([]byte, 16)
+	rand.Read(randBytes)
+	reqID := hex.EncodeToString(randBytes)
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+	if strings.Contains(virtualModel, "claude") {
+		w.Header().Set("request-id", "req_"+reqID)
+		w.Header().Set("anthropic-ratelimit-requests-limit", "10000")
+		w.Header().Set("anthropic-ratelimit-requests-remaining", "9998")
+		w.Header().Set("anthropic-ratelimit-tokens-limit", "800000")
+		w.Header().Set("anthropic-ratelimit-tokens-remaining", "799400")
+	} else {
+		w.Header().Set("x-request-id", reqID)
+		w.Header().Set("openai-organization", "org-kiitcode-production")
+		w.Header().Set("openai-processing-ms", fmt.Sprintf("%d", 120+time.Now().UnixMilli()%180))
+		w.Header().Set("openai-version", "2020-10-01")
+		w.Header().Set("x-ratelimit-limit-requests", "10000")
+		w.Header().Set("x-ratelimit-remaining-requests", "9999")
+	}
+}
+
+func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return []byte(`{"error":{"message":"Internal execution error","type":"api_error"}}`)
+		return body
 	}
 
 	if _, hasErr := raw["error"]; hasErr {
 		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please retry.","type":"server_error","code":"service_unavailable"}}`)
 	}
 
-	b := make([]byte, 12)
-	rand.Read(b)
-	randomID := hex.EncodeToString(b)
+	randBytes := make([]byte, 12)
+	rand.Read(randBytes)
+	randHex := hex.EncodeToString(randBytes)
 
 	if strings.Contains(virtualModel, "claude") {
-		raw["id"] = "msg_" + randomID
+		raw["id"] = "msg_01" + randHex
+		raw["object"] = "chat.completion"
 	} else {
-		raw["id"] = "chatcmpl-" + randomID
+		raw["id"] = "chatcmpl-" + randHex
+		raw["object"] = "chat.completion"
+		raw["system_fingerprint"] = "fp_v2_" + randHex[:10]
 	}
 
 	raw["model"] = virtualModel
+	raw["created"] = time.Now().Unix()
 	delete(raw, "cost")
 	delete(raw, "provider")
 	delete(raw, "router")
 	delete(raw, "upstream")
+	delete(raw, "native_tokens")
+	delete(raw, "generation_time")
 
+	var finalOutputText string
 	if choices, ok := raw["choices"].([]interface{}); ok {
 		for _, c := range choices {
 			choiceMap, ok := c.(map[string]interface{})
 			if !ok {
 				continue
 			}
-
+			choiceMap["finish_reason"] = "stop"
 			delete(choiceMap, "reasoning_content")
 			delete(choiceMap, "reasoning")
 
 			if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
 				delete(msg, "reasoning_content")
 				delete(msg, "reasoning")
-
 				if content, ok := msg["content"].(string); ok {
-					msg["content"] = sanitizeTextContent(content, virtualModel)
-				}
-			}
-
-			if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
-				delete(delta, "reasoning_content")
-				delete(delta, "reasoning")
-
-				if content, ok := delta["content"].(string); ok {
-					delta["content"] = sanitizeTextContent(content, virtualModel)
+					cleanedContent := sanitizeTextContent(content, virtualModel)
+					msg["content"] = cleanedContent
+					finalOutputText = cleanedContent
 				}
 			}
 		}
 	}
+
+	raw["usage"] = normalizeUsage(finalOutputText)
 
 	out, err := json.Marshal(raw)
 	if err != nil {
@@ -462,7 +556,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			for {
 				n, err := resp.Body.Read(buf)
 				if n > 0 {
-					cleanChunk := sanitizeTextContent(string(buf[:n]), virtualModel)
+					cleanChunk := sanitizeSSEChunk(string(buf[:n]), virtualModel)
 					w.Write([]byte(cleanChunk))
 					flusher.Flush()
 				}
@@ -474,11 +568,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		respBody, _ := io.ReadAll(resp.Body)
-		sanitizedBody := sanitizeResponseBody(respBody, virtualModel)
-
-		w.Header().Set("Content-Type", "application/json")
+		authenticBody := makeAuthenticResponse(respBody, virtualModel)
+		setAuthenticHeaders(w, virtualModel)
 		w.WriteHeader(resp.StatusCode)
-		w.Write(sanitizedBody)
+		w.Write(authenticBody)
 		return
 	}
 
@@ -518,9 +611,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
-	sanitizedBody := sanitizeResponseBody(respBody, virtualModel)
-
-	w.Header().Set("Content-Type", "application/json")
+	authenticBody := makeAuthenticResponse(respBody, virtualModel)
+	setAuthenticHeaders(w, virtualModel)
 	w.WriteHeader(resp.StatusCode)
-	w.Write(sanitizedBody)
+	w.Write(authenticBody)
 }
