@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,8 +96,22 @@ func generateSessionID() string {
 	return "ses_" + hex.EncodeToString(b)
 }
 
-func newHTTPClient() *http.Client {
+func newTorClient() *http.Client {
+	proxyURL, _ := url.Parse("socks5://127.0.0.1:9050")
+	return &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   120 * time.Second,
+	}
+}
+
+func newDirectClient() *http.Client {
 	return &http.Client{Timeout: 120 * time.Second}
+}
+
+func tryRotateIP() {
+	if err := renewTorIP("127.0.0.1:9051", ""); err != nil {
+		log.Printf("[WARN] Tor IP rotation failed: %v", err)
+	}
 }
 
 func renewTorIP(controlAddr, controlPassword string) error {
@@ -411,7 +426,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
-		client := newHTTPClient()
+		client := newTorClient()
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
@@ -475,7 +490,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client := newHTTPClient()
+	client := newTorClient()
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -486,6 +501,21 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == 429 {
+		log.Printf("[WARN] Rate limited, rotating Tor IP...")
+		tryRotateIP()
+		client = newTorClient()
+		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
+		newReq.Header.Set("Content-Type", "application/json")
+		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		resp, err = client.Do(newReq)
+		if err != nil {
+			http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+	}
 
 	respBody, _ := io.ReadAll(resp.Body)
 	sanitizedBody := sanitizeResponseBody(respBody, virtualModel)
