@@ -72,12 +72,20 @@ export async function onRequestPost(context) {
     });
 
     const responseData = await renderResponse.json();
-    const tokensUsed = responseData.usage?.total_tokens || 0;
+    const usage = responseData.usage || {};
+    const promptTokens = usage.prompt_tokens || 0;
+    const completionTokens = usage.completion_tokens || 0;
+    const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
+    const costDeducted = totalTokens * 0.000001;
 
-    if (tokensUsed > 0) {
-      env.DB.prepare(
+    if (totalTokens > 0) {
+      await env.DB.prepare(
         `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
-      ).bind(tokensUsed * 0.000001, user.key_id).run();
+      ).bind(costDeducted, user.key_id).run();
+
+      await env.DB.prepare(
+        `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(crypto.randomUUID(), user.key_id, responseData.model || "unknown", promptTokens, completionTokens, costDeducted).run();
     }
 
     return new Response(JSON.stringify(responseData), {
