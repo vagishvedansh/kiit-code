@@ -161,6 +161,12 @@ func generateSessionID() string {
 }
 
 func newTorClient() *http.Client {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:9050", 3*time.Second)
+	if err != nil {
+		log.Printf("[WARN] Tor SOCKS5 not available, falling back to direct connection: %v", err)
+		return newDirectClient()
+	}
+	conn.Close()
 	proxyURL, _ := url.Parse("socks5://127.0.0.1:9050")
 	return &http.Client{
 		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
@@ -520,7 +526,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
-		client := newDirectClient()
+		client := newTorClient()
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
@@ -583,7 +589,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client := newDirectClient()
+	client := newTorClient()
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -595,10 +601,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 429 {
-		log.Printf("[WARN] Rate limited, rotating Tor IP...")
+	if resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
+		log.Printf("[WARN] Upstream error HTTP %d, rotating Tor IP and retrying...", resp.StatusCode)
+		resp.Body.Close()
 		tryRotateIP()
-		client = newDirectClient()
+		client = newTorClient()
 		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		newReq.Header.Set("Content-Type", "application/json")
 		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -607,7 +614,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
