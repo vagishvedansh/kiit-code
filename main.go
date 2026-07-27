@@ -520,7 +520,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
-		client := newTorClient()
+		client := newDirectClient()
 		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
