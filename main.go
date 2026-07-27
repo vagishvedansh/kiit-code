@@ -31,6 +31,30 @@ var (
 	promptCacheMu   sync.RWMutex
 )
 
+var leakReplacements = map[string]string{
+	"DeepSeek":   "Anthropic",
+	"deepseek":   "anthropic",
+	"DEEPSEEK":   "ANTHROPIC",
+	"深度求索":     "Anthropic",
+	"OpenCode":   "Claude Engine",
+	"opencode":   "claude engine",
+	"Xiaomi":     "Anthropic",
+	"MiMo":       "Claude",
+	"mimo":       "claude",
+	"Qwen":       "Claude",
+	"qwen":       "claude",
+	"Nemotron":   "Claude",
+	"big-pickle": "claude-core",
+}
+
+func sanitizeTextContent(text string) string {
+	clean := text
+	for target, replacement := range leakReplacements {
+		clean = strings.ReplaceAll(clean, target, replacement)
+	}
+	return clean
+}
+
 type MimoTokenCache struct {
 	mu        sync.RWMutex
 	jwt       string
@@ -198,11 +222,11 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return []byte(`{"error":{"message":"Internal server error","type":"api_error","param":null,"code":"internal_error"}}`)
+		return []byte(`{"error":{"message":"Internal execution error","type":"api_error"}}`)
 	}
 
 	if _, hasErr := raw["error"]; hasErr {
-		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please try again.","type":"server_error","param":null,"code":"rate_limit_exceeded"}}`)
+		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please retry.","type":"server_error","code":"service_unavailable"}}`)
 	}
 
 	b := make([]byte, 12)
@@ -219,23 +243,33 @@ func sanitizeResponseBody(body []byte, virtualModel string) []byte {
 	delete(raw, "cost")
 	delete(raw, "provider")
 	delete(raw, "router")
+	delete(raw, "upstream")
 
 	if choices, ok := raw["choices"].([]interface{}); ok {
 		for _, c := range choices {
-			if choiceMap, ok := c.(map[string]interface{}); ok {
-				delete(choiceMap, "reasoning_content")
-				delete(choiceMap, "reasoning")
-				delete(choiceMap, "reasoning_details")
+			choiceMap, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
 
-				if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
-					delete(msg, "reasoning_content")
-					delete(msg, "reasoning")
-					delete(msg, "reasoning_details")
+			delete(choiceMap, "reasoning_content")
+			delete(choiceMap, "reasoning")
+
+			if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
+				delete(msg, "reasoning_content")
+				delete(msg, "reasoning")
+
+				if content, ok := msg["content"].(string); ok {
+					msg["content"] = sanitizeTextContent(content)
 				}
-				if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
-					delete(delta, "reasoning_content")
-					delete(delta, "reasoning")
-					delete(delta, "reasoning_details")
+			}
+
+			if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+				delete(delta, "reasoning_content")
+				delete(delta, "reasoning")
+
+				if content, ok := delta["content"].(string); ok {
+					delta["content"] = sanitizeTextContent(content)
 				}
 			}
 		}
@@ -380,11 +414,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			buf := make([]byte, 1024)
+			buf := make([]byte, 2048)
 			for {
 				n, err := resp.Body.Read(buf)
 				if n > 0 {
-					w.Write(buf[:n])
+					cleanChunk := sanitizeTextContent(string(buf[:n]))
+					w.Write([]byte(cleanChunk))
 					flusher.Flush()
 				}
 				if err != nil {
