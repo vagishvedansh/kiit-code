@@ -44,12 +44,14 @@ type KeyManager struct {
 var keyMgr *KeyManager
 
 func initKeyManager() {
-	km, err := NewKeyManager("keys.json")
+	km, err := NewKeyManager("/tmp/keys.json")
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to initialize key store: %v", err)
+		log.Printf("[WARN] Failed to initialize key store, using in-memory only: %v", err)
+		km = &KeyManager{data: &KeyStore{Keys: make(map[string]*UserKey)}, path: ""}
 	}
 	keyMgr = km
 	keyMgr.AddBalance("sk-kiit-test-key-12345", 10.00)
+	log.Printf("[INFO] Key manager initialized with test key balance: $10.00")
 }
 
 func NewKeyManager(path string) (*KeyManager, error) {
@@ -61,6 +63,9 @@ func NewKeyManager(path string) (*KeyManager, error) {
 }
 
 func (km *KeyManager) save() {
+	if km.path == "" {
+		return
+	}
 	f, _ := json.MarshalIndent(km.data, "", "  ")
 	os.WriteFile(km.path, f, 0644)
 }
