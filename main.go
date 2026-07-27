@@ -29,6 +29,7 @@ const (
 
 var (
 	internalSecret string
+	adminSecret    string
 	promptCache    = make(map[string]string)
 	promptCacheMu  sync.RWMutex
 )
@@ -198,14 +199,18 @@ func renewTorIP(controlAddr, controlPassword string) error {
 
 func main() {
 	internalSecret = os.Getenv("INTERNAL_SECRET")
+	adminSecret = os.Getenv("ADMIN_SECRET")
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	}
 
+	initKeyManager()
+
 	http.HandleFunc("/", healthHandler)
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
+	http.HandleFunc("/admin/add-funds", adminAddFundsHandler)
 
 	log.Printf("[INFO] Proxy Engine listening on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -478,6 +483,34 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		writeError(w, http.StatusUnauthorized, "missing_api_key", "Missing or malformed Authorization header.")
+		return
+	}
+	apiKey := strings.TrimPrefix(authHeader, "Bearer ")
+
+	userKey, err := keyMgr.AuthenticateAndCheckBalance(apiKey)
+	if err != nil {
+		switch err.Error() {
+		case "invalid_api_key":
+			writeError(w, http.StatusUnauthorized, "invalid_api_key", "Incorrect API key provided.")
+		case "key_disabled":
+			writeError(w, http.StatusForbidden, "account_deactivated", "Your API key has been disabled.")
+		case "insufficient_balance":
+			writeError(w, http.StatusPaymentRequired, "insufficient_quota", "Your balance is exhausted. Please recharge.")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal_error", "Database validation error.")
+		}
+		return
+	}
+
+	// Track usage for billing deduction
+	var respUsage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	}
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, `{"error":"Failed to read request body"}`, http.StatusBadRequest)
@@ -570,6 +603,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		respBody, _ := io.ReadAll(resp.Body)
 		authenticBody := makeAuthenticResponse(respBody, virtualModel)
 		setAuthenticHeaders(w, virtualModel)
+
+		var usageData struct {
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		}
+		json.Unmarshal(authenticBody, &usageData)
+		cost := CalculateCost(virtualModel, usageData.Usage.PromptTokens, usageData.Usage.CompletionTokens)
+		keyMgr.DeductBalance(apiKey, cost)
+		log.Printf("[BILL] key=%s model=%s cost=$%.6f", apiKey[:12]+"...", virtualModel, cost)
+
 		w.WriteHeader(resp.StatusCode)
 		w.Write(authenticBody)
 		return
@@ -613,6 +658,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	respBody, _ := io.ReadAll(resp.Body)
 	authenticBody := makeAuthenticResponse(respBody, virtualModel)
 	setAuthenticHeaders(w, virtualModel)
+
+	var usageData struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	json.Unmarshal(authenticBody, &usageData)
+	cost := CalculateCost(virtualModel, usageData.Usage.PromptTokens, usageData.Usage.CompletionTokens)
+	keyMgr.DeductBalance(apiKey, cost)
+	log.Printf("[BILL] key=%s model=%s cost=$%.6f", apiKey[:12]+"...", virtualModel, cost)
+
 	w.WriteHeader(resp.StatusCode)
 	w.Write(authenticBody)
 }
