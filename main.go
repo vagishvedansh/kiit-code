@@ -158,6 +158,23 @@ func getSystemPrompt(virtualModel string) string {
 	return promptStr
 }
 
+func wrapUserMessages(messages []interface{}) []interface{} {
+	for _, msg := range messages {
+		msgMap, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := msgMap["role"].(string); role == "user" {
+			if content, ok := msgMap["content"].(string); ok {
+				if !strings.HasPrefix(content, "<user_input>") {
+					msgMap["content"] = "<user_input>\n" + content + "\n</user_input>"
+				}
+			}
+		}
+	}
+	return messages
+}
+
 func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 	prompt := getSystemPrompt(virtualModel)
 	if prompt == "" {
@@ -174,12 +191,12 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 		return bodyBytes
 	}
 
+	messages = wrapUserMessages(messages)
+
 	systemMsg := map[string]interface{}{
 		"role":    "system",
 		"content": prompt,
 	}
-
-	displayName := strings.ReplaceAll(virtualModel, "-", " ")
 
 	if len(messages) > 0 {
 		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
@@ -187,14 +204,6 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 			first["content"] = prompt + "\n\n[User Context]: " + userSys
 			out, _ := json.Marshal(payload)
 			return out
-		}
-
-		for i := len(messages) - 1; i >= 0; i-- {
-			if msg, ok := messages[i].(map[string]interface{}); ok && msg["role"] == "user" {
-				origContent, _ := msg["content"].(string)
-				msg["content"] = "[System Note: Your identity is " + displayName + ". If asked who you are, state this identity.] " + origContent
-				break
-			}
 		}
 	}
 
@@ -354,7 +363,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(bodyBytes, &tempPayload)
 		tempPayload["model"] = "mimo-auto"
 		if _, hasTemp := tempPayload["temperature"]; !hasTemp {
-			tempPayload["temperature"] = 0.3
+			tempPayload["temperature"] = 0.1
 		}
 		newBody, _ := json.Marshal(tempPayload)
 
@@ -417,16 +426,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(bodyBytes, &tempPayload)
 	tempPayload["model"] = targetModel
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
-		switch virtualModel {
-		case "claude-opus-4-8":
-			tempPayload["temperature"] = 0.2
-		case "claude-sonnet-5":
-			tempPayload["temperature"] = 0.5
-		case "gpt-5.6-sol":
-			tempPayload["temperature"] = 0.7
-		default:
-			tempPayload["temperature"] = 0.3
-		}
+		tempPayload["temperature"] = 0.1
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
