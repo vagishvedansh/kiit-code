@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -810,8 +811,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 5; attempt++ {
-		upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
+	for attempt := 0; attempt < 4; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 		currIP := getRandomIP()
@@ -821,18 +823,21 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 		resp, errDo = client.Do(upstreamReq)
 		if errDo == nil && resp.StatusCode == http.StatusOK {
+			cancel()
 			break
 		}
 		if resp != nil {
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden || resp.StatusCode == 503 || resp.StatusCode == 502 {
-				log.Printf("[WARN] Upstream HTTP %d (attempt %d/5), rotating IP and retrying...", resp.StatusCode, attempt+1)
+				log.Printf("[WARN] Upstream HTTP %d (attempt %d/4), rotating IP and retrying...", resp.StatusCode, attempt+1)
 				resp.Body.Close()
+				cancel()
 				tryRotateIP()
 				client = newTorClient()
 				continue
 			}
-			break
+			resp.Body.Close()
 		}
+		cancel()
 	}
 
 	if errDo != nil || resp == nil {
