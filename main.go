@@ -1151,6 +1151,14 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(respBody)
+		return
+	}
+
 	var openResp ChatResponse
 	var extractedText string
 	if err := json.Unmarshal(respBody, &openResp); err == nil && len(openResp.Choices) > 0 {
