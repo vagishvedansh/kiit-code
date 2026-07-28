@@ -293,7 +293,21 @@ func newDirectClient() *http.Client {
 	return sharedDirectClient
 }
 
+var (
+	rotateLock     sync.Mutex
+	lastRotateTime time.Time
+)
+
 func tryRotateIP() {
+	rotateLock.Lock()
+	defer rotateLock.Unlock()
+
+	if time.Since(lastRotateTime) < 2200*time.Millisecond {
+		time.Sleep(1000 * time.Millisecond)
+		return
+	}
+	lastRotateTime = time.Now()
+
 	controlAddr := os.Getenv("TOR_CONTROL_ADDR")
 	if controlAddr == "" {
 		controlAddr = os.Getenv("TOR_CONTROL_PORT")
@@ -791,8 +805,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 5; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	for attempt := 0; attempt < 10; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -812,10 +826,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp != nil {
-			log.Printf("[WARN] Upstream HTTP %d (attempt %d/5). Rotating Tor IP...", resp.StatusCode, attempt+1)
+			log.Printf("[WARN] Upstream HTTP %d (attempt %d/10). Rotating Tor IP...", resp.StatusCode, attempt+1)
 			resp.Body.Close()
 		} else {
-			log.Printf("[WARN] Upstream connection error: %v (attempt %d/5). Rotating Tor IP...", errDo, attempt+1)
+			log.Printf("[WARN] Upstream connection error: %v (attempt %d/10). Rotating Tor IP...", errDo, attempt+1)
 		}
 		cancel()
 
