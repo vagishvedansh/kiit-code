@@ -44,6 +44,8 @@ export async function onRequestPost(context) {
 
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
+  proxyHeaders.delete("host");
+  proxyHeaders.delete("content-length");
 
   const modelCodes = {
     "op5": "claude-opus-5", "sn5": "claude-sonnet-5", "fb5": "claude-fable-5",
@@ -68,6 +70,27 @@ export async function onRequestPost(context) {
       headers: proxyHeaders,
       body: bodyToSend,
     });
+
+    if (!renderResponse.ok) {
+      const errData = await renderResponse.text();
+      return new Response(errData, {
+        status: renderResponse.status,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    const contentType = renderResponse.headers.get("Content-Type") || "";
+    if (contentType.includes("text/event-stream")) {
+      return new Response(renderResponse.body, {
+        status: renderResponse.status,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
+    }
 
     const responseData = await renderResponse.json();
     const usage = responseData.usage || {};

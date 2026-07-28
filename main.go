@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,8 +303,17 @@ func injectPrompt(bodyBytes []byte, virtualModel string) []byte {
 
 	if len(messages) > 0 {
 		if first, ok := messages[0].(map[string]interface{}); ok && first["role"] == "system" {
-			clientSys, _ := first["content"].(string)
-			first["content"] = proxyPrompt + "\n\n" + clientSys
+			if clientSys, ok := first["content"].(string); ok {
+				first["content"] = proxyPrompt + "\n\n" + clientSys
+			} else if clientBlocks, ok := first["content"].([]interface{}); ok {
+				proxyBlock := map[string]interface{}{
+					"type": "text",
+					"text": proxyPrompt,
+				}
+				first["content"] = append([]interface{}{proxyBlock}, clientBlocks...)
+			} else {
+				first["content"] = proxyPrompt
+			}
 			payload["messages"] = messages
 			out, _ := json.Marshal(payload)
 			return out
@@ -358,7 +366,8 @@ func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 		return body
 	}
 
-	if _, hasErr := raw["error"]; hasErr {
+	if errObj, hasErr := raw["error"]; hasErr {
+		log.Printf("[ERROR] Upstream returned error: %v", errObj)
 		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please retry.","type":"server_error","code":"service_unavailable"}}`)
 	}
 
@@ -578,7 +587,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 		tempPayload["temperature"] = 0.1
 	}
-	delete(tempPayload, "stream")
 	newBody, _ := json.Marshal(tempPayload)
 
 	client := newTorClient()
@@ -606,6 +614,33 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
 			return
 		}
+	}
+
+	if reqPayload.Stream && resp.StatusCode == http.StatusOK {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		buf := make([]byte, 2048)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				cleanChunk := sanitizeSSEChunk(string(buf[:n]), virtualModel)
+				w.Write([]byte(cleanChunk))
+				flusher.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+		return
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
