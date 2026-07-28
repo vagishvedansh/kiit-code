@@ -766,10 +766,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
-		http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
+		http.Error(w, `{"error":{"message":"OpenCode upstream unreachable","type":"api_error"}}`, http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
 		log.Printf("[WARN] Upstream error HTTP %d, rotating Tor IP and retrying...", resp.StatusCode)
@@ -782,10 +781,42 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		resp, err = client.Do(newReq)
 	}
 
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
+	if err != nil {
+		http.Error(w, `{"error":{"message":"Upstream request failed","type":"api_error"}}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if reqPayload.Stream && resp.StatusCode == http.StatusOK {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
 		}
+
+		buf := make([]byte, 2048)
+		for {
+			n, errRead := resp.Body.Read(buf)
+			if n > 0 {
+				cleanChunk := sanitizeSSEChunk(string(buf[:n]), virtualModel)
+				w.Write([]byte(cleanChunk))
+				flusher.Flush()
+			}
+			if errRead != nil {
+				break
+			}
+		}
+		return
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	// Fallback to MiMo if OpenCode returned non-200 or an error payload
+	if resp.StatusCode != http.StatusOK || bytes.Contains(respBody, []byte(`"error"`)) {
 		log.Printf("[WARN] OpenCode failed (status %v), falling back to Xiaomi MiMo backend...", resp.StatusCode)
 		jwt, err := mimoAuth.GetJWT()
 		if err == nil {
@@ -818,64 +849,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if reqPayload.Stream && resp.StatusCode == http.StatusOK {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-			return
-		}
-
-		buf := make([]byte, 2048)
-		for {
-			n, err := resp.Body.Read(buf)
-			if n > 0 {
-				cleanChunk := sanitizeSSEChunk(string(buf[:n]), virtualModel)
-				w.Write([]byte(cleanChunk))
-				flusher.Flush()
-			}
-			if err != nil {
-				break
-			}
-		}
-		return
-	}
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if bytes.Contains(respBody, []byte(`"error"`)) {
-		log.Printf("[WARN] OpenCode returned error payload, falling back to Xiaomi MiMo backend...")
-		jwt, err := mimoAuth.GetJWT()
-		if err == nil {
-			var mimoPayload map[string]interface{}
-			json.Unmarshal(bodyBytes, &mimoPayload)
-			mimoPayload["model"] = "mimo-auto"
-			if _, hasTemp := mimoPayload["temperature"]; !hasTemp {
-				mimoPayload["temperature"] = 0.1
-			}
-			delete(mimoPayload, "stream")
-			mimoBody, _ := json.Marshal(mimoPayload)
-
-			mimoReq, _ := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(mimoBody))
-			mimoReq.Header.Set("Content-Type", "application/json")
-			mimoReq.Header.Set("Authorization", "Bearer "+jwt)
-			mimoReq.Header.Set("User-Agent", "mimocode/0.1.0 ai-sdk/provider-utils/4.0.23")
-			mimoReq.Header.Set("X-Mimo-Source", "mimocode-cli-free")
-			mimoReq.Header.Set("x-session-affinity", generateSessionID())
-
-			mimoResp, err := client.Do(mimoReq)
-			if err == nil && mimoResp.StatusCode == http.StatusOK {
-				defer mimoResp.Body.Close()
-				mimoRespBody, _ := io.ReadAll(mimoResp.Body)
-				authenticBody := makeAuthenticResponse(mimoRespBody, virtualModel)
-				setAuthenticHeaders(w, virtualModel)
-				w.WriteHeader(http.StatusOK)
-				w.Write(authenticBody)
-				return
-			}
-		}
+	if len(respBody) == 0 {
+		respBody = []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please try again in a few moments.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`)
 	}
 
 	authenticBody := makeAuthenticResponse(respBody, virtualModel)
