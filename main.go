@@ -1031,39 +1031,44 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	openAIPayloadBytes, _ := json.Marshal(openAIReq)
-	client := newTorClient()
-	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	currIP := getRandomIP()
-	upstreamReq.Header.Set("X-Forwarded-For", currIP)
-	upstreamReq.Header.Set("X-Real-IP", currIP)
-	upstreamReq.Header.Set("CF-Connecting-IP", currIP)
+	var resp *http.Response
+	var errDo error
 
-	resp, err := client.Do(upstreamReq)
-	if err != nil {
+	for attempt := 0; attempt < 10; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+
+		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		
+		upstreamReq.Header.Del("X-Forwarded-For")
+		upstreamReq.Header.Del("X-Real-IP")
+		upstreamReq.Header.Del("CF-Connecting-IP")
+
+		client := newTorClient()
+		resp, errDo = client.Do(upstreamReq)
+
+		if errDo == nil && resp.StatusCode == http.StatusOK {
+			cancel()
+			break
+		}
+
+		if resp != nil {
+			log.Printf("[WARN] Anthropic upstream HTTP %d (attempt %d/10). Rotating Tor IP...", resp.StatusCode, attempt+1)
+			resp.Body.Close()
+		} else {
+			log.Printf("[WARN] Anthropic upstream connection error: %v (attempt %d/10). Rotating Tor IP...", errDo, attempt+1)
+		}
+		cancel()
+
+		tryRotateIP()
+	}
+
+	if errDo != nil || resp == nil {
 		http.Error(w, `{"type":"error","error":{"type":"api_error","message":"OpenCode upstream unreachable"}}`, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
-		tryRotateIP()
-		client = newTorClient()
-		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
-		newReq.Header.Set("Content-Type", "application/json")
-		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-		retryIP := getRandomIP()
-		newReq.Header.Set("X-Forwarded-For", retryIP)
-		newReq.Header.Set("X-Real-IP", retryIP)
-		newReq.Header.Set("CF-Connecting-IP", retryIP)
-		retryResp, errRetry := client.Do(newReq)
-		if errRetry == nil {
-			resp.Body.Close()
-			resp = retryResp
-			defer resp.Body.Close()
-		}
-	}
 
 	msgID := "msg_" + generateSessionID()
 
