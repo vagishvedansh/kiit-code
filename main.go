@@ -770,37 +770,38 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	newBody, _ := json.Marshal(tempPayload)
 
 	client := newTorClient()
-	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	currIP := getRandomIP()
-	upstreamReq.Header.Set("X-Forwarded-For", currIP)
-	upstreamReq.Header.Set("X-Real-IP", currIP)
-	upstreamReq.Header.Set("CF-Connecting-IP", currIP)
+	var resp *http.Response
+	var errDo error
 
-	resp, err := client.Do(upstreamReq)
-	if err != nil {
+	for attempt := 0; attempt < 15; attempt++ {
+		upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		currIP := getRandomIP()
+		upstreamReq.Header.Set("X-Forwarded-For", currIP)
+		upstreamReq.Header.Set("X-Real-IP", currIP)
+		upstreamReq.Header.Set("CF-Connecting-IP", currIP)
+
+		resp, errDo = client.Do(upstreamReq)
+		if errDo == nil && resp.StatusCode == http.StatusOK {
+			break
+		}
+		if resp != nil {
+			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden || resp.StatusCode == 503 || resp.StatusCode == 502 {
+				log.Printf("[WARN] Upstream HTTP %d (attempt %d/15), rotating IP and retrying...", resp.StatusCode, attempt+1)
+				resp.Body.Close()
+				tryRotateIP()
+				client = newTorClient()
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if errDo != nil || resp == nil {
 		http.Error(w, `{"error":{"message":"OpenCode upstream unreachable","type":"api_error"}}`, http.StatusBadGateway)
-		return
-	}
-
-	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
-		log.Printf("[WARN] Upstream error HTTP %d, rotating IP and retrying...", resp.StatusCode)
-		resp.Body.Close()
-		tryRotateIP()
-		client = newTorClient()
-		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
-		newReq.Header.Set("Content-Type", "application/json")
-		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-		retryIP := getRandomIP()
-		newReq.Header.Set("X-Forwarded-For", retryIP)
-		newReq.Header.Set("X-Real-IP", retryIP)
-		newReq.Header.Set("CF-Connecting-IP", retryIP)
-		resp, err = client.Do(newReq)
-	}
-
-	if err != nil {
-		http.Error(w, `{"error":{"message":"Upstream request failed","type":"api_error"}}`, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
