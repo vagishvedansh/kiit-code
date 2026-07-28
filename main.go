@@ -160,8 +160,8 @@ var modelMap = map[string]string{
 	"qwen-2.5-coder": "deepseek-v4-flash-free",
 	"qwen-3.6-coder": "deepseek-v4-flash-free",
 	"qwen-3.8-max":   "deepseek-v4-flash-free",
-	"kimi-k2.6":      "ling-3.0-flash-free",
-	"minimax-m2.7":   "ling-3.0-flash-free",
+	"kimi-k2.6":      "deepseek-v4-flash-free",
+	"minimax-m2.7":   "deepseek-v4-flash-free",
 }
 
 func generateSessionID() string {
