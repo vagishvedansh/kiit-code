@@ -529,10 +529,12 @@ func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 			choiceMap["finish_reason"] = "stop"
 			delete(choiceMap, "reasoning_content")
 			delete(choiceMap, "reasoning")
+			delete(choiceMap, "reasoning_details")
 
 			if msg, ok := choiceMap["message"].(map[string]interface{}); ok {
 				delete(msg, "reasoning_content")
 				delete(msg, "reasoning")
+				delete(msg, "reasoning_details")
 				if content, ok := msg["content"].(string); ok {
 					cleanedContent := sanitizeTextContent(content, virtualModel)
 					msg["content"] = cleanedContent
