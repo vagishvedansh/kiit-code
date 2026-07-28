@@ -701,10 +701,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
 
-	targetModel := modelMap[virtualModel]
-	if targetModel == "" {
-		targetModel = "mimo-auto"
-	}
+	targetModel := "north-mini-code-free"
 
 	if targetModel == "mimo-auto" {
 		jwt, err := mimoAuth.GetJWT()
@@ -784,6 +781,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		tempPayload["temperature"] = 0.1
 	}
 	newBody, _ := json.Marshal(tempPayload)
+	var resp *http.Response
+	var errDo error
 
 	for attempt := 0; attempt < 10; attempt++ {
 		ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
@@ -867,7 +866,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			mimoReq.Header.Set("X-Mimo-Source", "mimocode-cli-free")
 			mimoReq.Header.Set("x-session-affinity", generateSessionID())
 
-			mimoResp, err := client.Do(mimoReq)
+			mimoResp, err := newTorClient().Do(mimoReq)
 			if err == nil && mimoResp.StatusCode == http.StatusOK {
 				defer mimoResp.Body.Close()
 				mimoRespBody, _ := io.ReadAll(mimoResp.Body)
