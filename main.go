@@ -184,12 +184,19 @@ var modelMap = map[string]string{
 	"kimi-k2.6":      "deepseek-v4-flash-free",
 	"minimax-m2.7":   "deepseek-v4-flash-free",
 
-	// Claude Native Aliases
+	// Claude Native & Modern Aliases (Sonnet 5, Opus 5, Sonnet 4.5, 3.7, etc.)
+	"claude-sonnet-5":            "north-mini-code-free",
+	"claude-opus-5":              "deepseek-v4-flash-free",
+	"claude-sonnet-4-5":          "north-mini-code-free",
+	"claude-sonnet-4":            "north-mini-code-free",
+	"claude-opus-4-5":            "deepseek-v4-flash-free",
 	"claude-3-7-sonnet-20250219": "deepseek-v4-flash-free",
 	"claude-3-5-sonnet-20241022": "north-mini-code-free",
+	"claude-3-5-sonnet-20240620": "north-mini-code-free",
 	"claude-3-5-haiku-20241022":  "deepseek-v4-flash-free",
 	"claude-3-opus-20240229":     "deepseek-v4-flash-free",
-	"claude-opus-5":              "deepseek-v4-flash-free",
+	"claude-3-haiku-20240307":    "deepseek-v4-flash-free",
+	"claude-3-sonnet-20240229":   "north-mini-code-free",
 }
 
 func generateSessionID() string {
