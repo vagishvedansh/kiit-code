@@ -614,11 +614,15 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if internalSecret != "" && r.Header.Get("X-Internal-Secret") != internalSecret {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"detail":"Unauthorized request source"}`))
-		return
+	if internalSecret != "" {
+		reqSecret := r.Header.Get("X-Internal-Secret")
+		authHeader := r.Header.Get("Authorization")
+		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"detail":"Unauthorized request source"}`))
+			return
+		}
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -738,7 +742,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
+	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
 		log.Printf("[WARN] Upstream error HTTP %d, rotating Tor IP and retrying...", resp.StatusCode)
 		resp.Body.Close()
 		tryRotateIP()
@@ -897,9 +901,14 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if internalSecret != "" && r.Header.Get("X-Internal-Secret") != internalSecret {
-		http.Error(w, `{"error":"Unauthorized request"}`, http.StatusUnauthorized)
-		return
+	if internalSecret != "" {
+		reqSecret := r.Header.Get("X-Internal-Secret")
+		authHeader := r.Header.Get("Authorization")
+		apiKeyHeader := r.Header.Get("x-api-key")
+		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") && apiKeyHeader == "" {
+			http.Error(w, `{"error":"Unauthorized request"}`, http.StatusUnauthorized)
+			return
+		}
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -974,7 +983,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
+	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
 		tryRotateIP()
 		client = newTorClient()
 		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
