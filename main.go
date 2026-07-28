@@ -244,6 +244,16 @@ func generateSessionID() string {
 	return "ses_" + hex.EncodeToString(b)
 }
 
+func getRandomIP() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	ip1 := 1 + (int(b[0]) % 200)
+	ip2 := 1 + (int(b[1]) % 250)
+	ip3 := 1 + (int(b[2]) % 250)
+	ip4 := 1 + (int(b[3]) % 250)
+	return fmt.Sprintf("%d.%d.%d.%d", ip1, ip2, ip3, ip4)
+}
+
 var sharedDirectClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
@@ -763,6 +773,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	currIP := getRandomIP()
+	upstreamReq.Header.Set("X-Forwarded-For", currIP)
+	upstreamReq.Header.Set("X-Real-IP", currIP)
+	upstreamReq.Header.Set("CF-Connecting-IP", currIP)
 
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
@@ -771,13 +785,17 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
-		log.Printf("[WARN] Upstream error HTTP %d, rotating Tor IP and retrying...", resp.StatusCode)
+		log.Printf("[WARN] Upstream error HTTP %d, rotating IP and retrying...", resp.StatusCode)
 		resp.Body.Close()
 		tryRotateIP()
 		client = newTorClient()
 		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		newReq.Header.Set("Content-Type", "application/json")
 		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		retryIP := getRandomIP()
+		newReq.Header.Set("X-Forwarded-For", retryIP)
+		newReq.Header.Set("X-Real-IP", retryIP)
+		newReq.Header.Set("CF-Connecting-IP", retryIP)
 		resp, err = client.Do(newReq)
 	}
 
@@ -979,6 +997,10 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	currIP := getRandomIP()
+	upstreamReq.Header.Set("X-Forwarded-For", currIP)
+	upstreamReq.Header.Set("X-Real-IP", currIP)
+	upstreamReq.Header.Set("CF-Connecting-IP", currIP)
 
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
@@ -993,6 +1015,10 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
 		newReq.Header.Set("Content-Type", "application/json")
 		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		retryIP := getRandomIP()
+		newReq.Header.Set("X-Forwarded-For", retryIP)
+		newReq.Header.Set("X-Real-IP", retryIP)
+		newReq.Header.Set("CF-Connecting-IP", retryIP)
 		retryResp, errRetry := client.Do(newReq)
 		if errRetry == nil {
 			resp.Body.Close()
