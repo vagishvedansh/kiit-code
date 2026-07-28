@@ -200,8 +200,8 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// DeepSeek Series
-	"deepseek-r1": "deepseek-v4-flash-free",
-	"deepseek-v3": "deepseek-v4-flash-free",
+	"deepseek-r1": "north-mini-code-free",
+	"deepseek-v3": "north-mini-code-free",
 
 	// GPT / OpenAI Series
 	"gpt-4o":         "north-mini-code-free",
