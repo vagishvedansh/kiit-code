@@ -234,6 +234,7 @@ func main() {
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
 	http.HandleFunc("/v1/messages", anthropicMessagesHandler)
+	http.HandleFunc("/v1/v1/messages", anthropicMessagesHandler)
 
 	log.Printf("[INFO] Proxy Engine listening on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
