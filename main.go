@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
@@ -137,10 +138,30 @@ var mimoAuth = &MimoTokenCache{
 	client: &http.Client{Timeout: 15 * time.Second},
 }
 
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type ChatRequest struct {
-	Model    string          `json:"model"`
-	Messages json.RawMessage `json:"messages"`
-	Stream   bool            `json:"stream,omitempty"`
+	Model       string      `json:"model"`
+	Messages    interface{} `json:"messages"`
+	Temperature float64     `json:"temperature,omitempty"`
+	Stream      bool        `json:"stream,omitempty"`
+}
+
+type ChatResponseChoice struct {
+	Index        int         `json:"index"`
+	Message      ChatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"`
+}
+
+type ChatResponse struct {
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created"`
+	Model   string               `json:"model"`
+	Choices []ChatResponseChoice `json:"choices"`
 }
 
 var modelMap = map[string]string{
@@ -212,6 +233,7 @@ func main() {
 	http.HandleFunc("/", healthHandler)
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
+	http.HandleFunc("/v1/messages", anthropicMessagesHandler)
 
 	log.Printf("[INFO] Proxy Engine listening on port %s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
@@ -662,5 +684,246 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(authenticBody)
+}
+
+type AnthropicMessageContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type AnthropicMessageInput struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type AnthropicPayload struct {
+	Model     string                  `json:"model"`
+	Messages  []AnthropicMessageInput `json:"messages"`
+	System    json.RawMessage         `json:"system,omitempty"`
+	Stream    bool                    `json:"stream,omitempty"`
+	MaxTokens int                     `json:"max_tokens,omitempty"`
+}
+
+func parseAnthropicContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+	var blocks []AnthropicMessageContent
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var sb strings.Builder
+		for _, b := range blocks {
+			if b.Type == "text" {
+				sb.WriteString(b.Text)
+			}
+		}
+		return sb.String()
+	}
+	return string(raw)
+}
+
+func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	if internalSecret != "" && r.Header.Get("X-Internal-Secret") != internalSecret {
+		http.Error(w, `{"error":"Unauthorized request"}`, http.StatusUnauthorized)
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to read request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	var payload AnthropicPayload
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		http.Error(w, `{"error":"Invalid Anthropic JSON payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	reqModelHeader := r.Header.Get("X-Model-Name")
+	var requestedModel string
+	if reqModelHeader != "" {
+		requestedModel = reqModelHeader
+	} else if payload.Model != "" {
+		requestedModel = payload.Model
+	} else {
+		requestedModel = "gpt-5.4-o-mini"
+	}
+	virtualModel := normalizeModel(requestedModel)
+	targetModel := modelMap[virtualModel]
+	if targetModel == "" {
+		targetModel = "deepseek-v4-flash-free"
+	}
+
+	var openAIMessages []ChatMessage
+	sysContent := parseAnthropicContent(payload.System)
+	if sysContent != "" {
+		openAIMessages = append(openAIMessages, ChatMessage{Role: "system", Content: sysContent})
+	}
+
+	for _, msg := range payload.Messages {
+		text := parseAnthropicContent(msg.Content)
+		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
+	}
+
+	openAIReq := ChatRequest{
+		Model:       targetModel,
+		Messages:    openAIMessages,
+		Temperature: 0.1,
+		Stream:      payload.Stream,
+	}
+
+	openAIPayloadBytes, _ := json.Marshal(openAIReq)
+	client := newTorClient()
+	upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, `{"type":"error","error":{"type":"api_error","message":"OpenCode upstream unreachable"}}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 429 || resp.StatusCode == 503 || resp.StatusCode == 502 {
+		tryRotateIP()
+		client = newTorClient()
+		newReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
+		newReq.Header.Set("Content-Type", "application/json")
+		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+		retryResp, errRetry := client.Do(newReq)
+		if errRetry == nil {
+			resp.Body.Close()
+			resp = retryResp
+			defer resp.Body.Close()
+		}
+	}
+
+	msgID := "msg_" + generateSessionID()
+
+	if payload.Stream && resp.StatusCode == http.StatusOK {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("anthropic-version", "2023-06-01")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
+			return
+		}
+
+		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":45,\"output_tokens\":1}}}\n\n", msgID, virtualModel)
+		w.Write([]byte(startMsgEvent))
+
+		startBlockEvent := "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+		w.Write([]byte(startBlockEvent))
+		flusher.Flush()
+
+		reader := bufio.NewReader(resp.Body)
+		var totalText string
+
+		for {
+			line, errRead := reader.ReadString('\n')
+			if len(line) > 0 {
+				lineTrimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(lineTrimmed, "data: ") {
+					dataStr := strings.TrimPrefix(lineTrimmed, "data: ")
+					if dataStr == "[DONE]" {
+						break
+					}
+					var openChunk map[string]interface{}
+					if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
+						if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+							if choice, ok := choices[0].(map[string]interface{}); ok {
+								if delta, ok := choice["delta"].(map[string]interface{}); ok {
+									if chunkContent, ok := delta["content"].(string); ok && chunkContent != "" {
+										totalText += chunkContent
+										deltaBytes, _ := json.Marshal(map[string]interface{}{
+											"type":  "content_block_delta",
+											"index": 0,
+											"delta": map[string]interface{}{
+												"type": "text_delta",
+												"text": chunkContent,
+											},
+										})
+										w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+										flusher.Flush()
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			if errRead != nil {
+				break
+			}
+		}
+
+		stopBlockEvent := "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+		w.Write([]byte(stopBlockEvent))
+
+		outTokenCount := len(strings.Fields(totalText))
+		if outTokenCount == 0 {
+			outTokenCount = 1
+		}
+
+		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outTokenCount)
+		w.Write([]byte(msgDeltaEvent))
+
+		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		w.Write([]byte(msgStopEvent))
+		flusher.Flush()
+		return
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var openResp ChatResponse
+	var extractedText string
+	if err := json.Unmarshal(respBody, &openResp); err == nil && len(openResp.Choices) > 0 {
+		extractedText = openResp.Choices[0].Message.Content
+	} else {
+		extractedText = string(respBody)
+	}
+
+	outTokenCount := len(strings.Fields(extractedText))
+	if outTokenCount == 0 {
+		outTokenCount = 1
+	}
+
+	anthropicResp := map[string]interface{}{
+		"id":          msgID,
+		"type":        "message",
+		"role":        "assistant",
+		"model":       virtualModel,
+		"stop_reason": "end_turn",
+		"stop_sequence": nil,
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": extractedText,
+			},
+		},
+		"usage": map[string]interface{}{
+			"input_tokens":  45,
+			"output_tokens": outTokenCount,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("anthropic-version", "2023-06-01")
+	w.WriteHeader(resp.StatusCode)
+	json.NewEncoder(w).Encode(anthropicResp)
 }
  
