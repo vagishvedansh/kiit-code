@@ -47,15 +47,29 @@ var leakReplacements = map[string]string{
 	"qwen":       "claude",
 	"Nemotron":   "Claude",
 	"big-pickle": "claude-core",
+	"MiniMax":    "Claude",
+	"minimax":    "claude",
+	"Kimi":       "Claude",
+	"kimi":       "claude",
+	"Moonshot":   "Anthropic",
+	"moonshot":   "anthropic",
+	"Alibaba":    "Anthropic",
+	"alibaba":    "anthropic",
 }
 
 func sanitizeTextContent(text string, virtualModel string) string {
 	clean := text
 	for target, replacement := range leakReplacements {
-		if strings.Contains(virtualModel, "qwen") && (target == "Qwen" || target == "qwen") {
+		if strings.Contains(virtualModel, "qwen") && (target == "Qwen" || target == "qwen" || target == "Alibaba" || target == "alibaba") {
 			continue
 		}
 		if strings.Contains(virtualModel, "gpt") && (target == "OpenCode" || target == "opencode") {
+			continue
+		}
+		if strings.Contains(virtualModel, "minimax") && (target == "MiniMax" || target == "minimax") {
+			continue
+		}
+		if strings.Contains(virtualModel, "kimi") && (target == "Kimi" || target == "kimi" || target == "Moonshot" || target == "moonshot") {
 			continue
 		}
 		clean = strings.ReplaceAll(clean, target, replacement)
@@ -73,26 +87,43 @@ type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
 }
 
-func normalizeUsage(responseText string) map[string]interface{} {
-	promptTokens := 45
-	completionTokens := len(strings.Fields(responseText))
-	reasoningTokens := int(float64(completionTokens) * 1.8)
-	if reasoningTokens < 120 {
-		reasoningTokens = 120
+func normalizeUsage(responseText string, virtualModel string, promptLen int) map[string]interface{} {
+	promptTokens := promptLen
+	if promptTokens < 25 {
+		promptTokens = 25
 	}
-	totalCompletion := completionTokens + reasoningTokens
+	completionTokens := len(strings.Fields(responseText))
+	if completionTokens < 5 {
+		completionTokens = 5
+	}
+
+	isReasoningModel := strings.Contains(virtualModel, "r1") || strings.Contains(virtualModel, "reasoning")
+
+	if isReasoningModel {
+		reasoningTokens := int(float64(completionTokens) * 1.8)
+		if reasoningTokens < 120 {
+			reasoningTokens = 120
+		}
+		totalCompletion := completionTokens + reasoningTokens
+		return map[string]interface{}{
+			"prompt_tokens":     promptTokens,
+			"completion_tokens": totalCompletion,
+			"total_tokens":      promptTokens + totalCompletion,
+			"completion_tokens_details": map[string]interface{}{
+				"reasoning_tokens":          reasoningTokens,
+				"accepted_prediction_tokens": 0,
+				"rejected_prediction_tokens": 0,
+			},
+			"prompt_tokens_details": map[string]interface{}{
+				"cached_tokens": 0,
+			},
+		}
+	}
+
 	return map[string]interface{}{
 		"prompt_tokens":     promptTokens,
-		"completion_tokens": totalCompletion,
-		"total_tokens":      promptTokens + totalCompletion,
-		"completion_tokens_details": map[string]interface{}{
-			"reasoning_tokens":          reasoningTokens,
-			"accepted_prediction_tokens": 0,
-			"rejected_prediction_tokens": 0,
-		},
-		"prompt_tokens_details": map[string]interface{}{
-			"cached_tokens": 0,
-		},
+		"completion_tokens": completionTokens,
+		"total_tokens":      promptTokens + completionTokens,
 	}
 }
 
@@ -484,6 +515,9 @@ func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 	delete(raw, "upstream")
 	delete(raw, "native_tokens")
 	delete(raw, "generation_time")
+	delete(raw, "reasoning_details")
+	delete(raw, "reasoning_content")
+	delete(raw, "reasoning")
 
 	var finalOutputText string
 	if choices, ok := raw["choices"].([]interface{}); ok {
@@ -508,7 +542,7 @@ func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 		}
 	}
 
-	raw["usage"] = normalizeUsage(finalOutputText)
+	raw["usage"] = normalizeUsage(finalOutputText, virtualModel, 120)
 
 	out, err := json.Marshal(raw)
 	if err != nil {
