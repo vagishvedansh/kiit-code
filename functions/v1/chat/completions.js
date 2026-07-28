@@ -49,7 +49,7 @@ export async function onRequestPost(context) {
 
   const modelCodes = {
     "g54": "gpt-4o-mini", "g4o": "gpt-4o", "g4m": "gpt-4o-mini",
-    "dsr": "deepseek-r1", "dsp": "deepseek-pro", "dsv": "deepseek-v3",
+    "dsr": "deepseek-r1", "dsv": "deepseek-v3",
     "qw3": "qwen-3.6-coder", "qw2": "qwen-2.5-coder", "km2": "kimi-k2.6", "mm2": "minimax-m2.7"
   };
 

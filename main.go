@@ -209,10 +209,8 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// DeepSeek Series
-	"deepseek-r1":      "north-mini-code-free",
-	"deepseek-r1-free": "north-mini-code-free",
-	"deepseek-v3":      "north-mini-code-free",
-	"deepseek-pro":     "north-mini-code-free",
+	"deepseek-r1": "north-mini-code-free",
+	"deepseek-v3": "north-mini-code-free",
 
 	// GPT / OpenAI Series
 	"gpt-4o":        "north-mini-code-free",
@@ -319,7 +317,7 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 		case strings.Contains(mLower, "deepseek"):
 			owner = "deepseek"
 		case strings.Contains(mLower, "qwen"):
-			owner = "qwen"
+			owner = "alibaba"
 		case strings.Contains(mLower, "kimi"):
 			owner = "moonshot"
 		case strings.Contains(mLower, "minimax"):
