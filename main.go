@@ -740,9 +740,41 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		newReq.Header.Set("Content-Type", "application/json")
 		newReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 		resp, err = client.Do(newReq)
-		if err != nil {
-			http.Error(w, `{"error":"OpenCode upstream unreachable"}`, http.StatusBadGateway)
-			return
+	}
+
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		log.Printf("[WARN] OpenCode failed (status %v), falling back to Xiaomi MiMo backend...", resp.StatusCode)
+		jwt, err := mimoAuth.GetJWT()
+		if err == nil {
+			var mimoPayload map[string]interface{}
+			json.Unmarshal(bodyBytes, &mimoPayload)
+			mimoPayload["model"] = "mimo-auto"
+			if _, hasTemp := mimoPayload["temperature"]; !hasTemp {
+				mimoPayload["temperature"] = 0.1
+			}
+			delete(mimoPayload, "stream")
+			mimoBody, _ := json.Marshal(mimoPayload)
+
+			mimoReq, _ := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(mimoBody))
+			mimoReq.Header.Set("Content-Type", "application/json")
+			mimoReq.Header.Set("Authorization", "Bearer "+jwt)
+			mimoReq.Header.Set("User-Agent", "mimocode/0.1.0 ai-sdk/provider-utils/4.0.23")
+			mimoReq.Header.Set("X-Mimo-Source", "mimocode-cli-free")
+			mimoReq.Header.Set("x-session-affinity", generateSessionID())
+
+			mimoResp, err := client.Do(mimoReq)
+			if err == nil && mimoResp.StatusCode == http.StatusOK {
+				defer mimoResp.Body.Close()
+				mimoRespBody, _ := io.ReadAll(mimoResp.Body)
+				authenticBody := makeAuthenticResponse(mimoRespBody, virtualModel)
+				setAuthenticHeaders(w, virtualModel)
+				w.WriteHeader(http.StatusOK)
+				w.Write(authenticBody)
+				return
+			}
 		}
 	}
 
