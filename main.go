@@ -785,12 +785,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	newBody, _ := json.Marshal(tempPayload)
 
-	client := newTorClient()
-	var resp *http.Response
-	var errDo error
-
-	for attempt := 0; attempt < 15; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	for attempt := 0; attempt < 10; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -799,20 +795,20 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Set("X-Real-IP", currIP)
 		upstreamReq.Header.Set("CF-Connecting-IP", currIP)
 
+		client := newTorClient()
 		resp, errDo = client.Do(upstreamReq)
 		if errDo == nil && resp.StatusCode == http.StatusOK {
 			cancel()
 			break
 		}
 		if resp != nil {
-			log.Printf("[WARN] Upstream HTTP %d (attempt %d/15), rotating Tor IP...", resp.StatusCode, attempt+1)
+			log.Printf("[WARN] Upstream HTTP %d (attempt %d/10), rotating Tor IP...", resp.StatusCode, attempt+1)
 			resp.Body.Close()
 		} else {
-			log.Printf("[WARN] Upstream connection error: %v (attempt %d/15), rotating Tor IP...", errDo, attempt+1)
+			log.Printf("[WARN] Upstream connection error: %v (attempt %d/10), rotating Tor IP...", errDo, attempt+1)
 		}
 		cancel()
 		tryRotateIP()
-		client = newTorClient()
 		time.Sleep(100 * time.Millisecond)
 	}
 
