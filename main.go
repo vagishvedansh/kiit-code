@@ -810,7 +810,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 30; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
 		upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -825,16 +825,14 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if resp != nil {
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden || resp.StatusCode == 503 || resp.StatusCode == 502 {
-				log.Printf("[WARN] Upstream HTTP %d (attempt %d/15), rotating IP and retrying...", resp.StatusCode, attempt+1)
+				log.Printf("[WARN] Upstream HTTP %d (attempt %d/5), rotating IP and retrying...", resp.StatusCode, attempt+1)
 				resp.Body.Close()
 				tryRotateIP()
 				client = newTorClient()
-				time.Sleep(50 * time.Millisecond)
 				continue
 			}
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 
 	if errDo != nil || resp == nil {
