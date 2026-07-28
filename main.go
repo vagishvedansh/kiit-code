@@ -243,23 +243,25 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 
 func normalizeModel(reqModel string) string {
 	m := strings.ToLower(strings.TrimSpace(reqModel))
+
+	// Direct match in modelMap
+	if _, exists := modelMap[m]; exists {
+		return m
+	}
+
 	switch {
-	case strings.Contains(m, "claud") && strings.Contains(m, "sonnet"):
-		return "claude-sonnet-5"
-	case strings.Contains(m, "claud") && strings.Contains(m, "fable"):
-		return "claude-fable-5"
-	case strings.Contains(m, "claud") && strings.Contains(m, "4.8") && strings.Contains(m, "think"):
-		return "claude-4.8-thinking"
-	case strings.Contains(m, "claud") && strings.Contains(m, "opus"):
-		return "claude-opus-5"
-	case strings.Contains(m, "claud") && strings.Contains(m, "4.8"):
-		return "claude-opus-4-8"
-	case strings.Contains(m, "gpt") || strings.Contains(m, "pickle"):
-		return "gpt-5.6-sol"
+	case strings.Contains(m, "deepseek") || strings.Contains(m, "r1"):
+		return "deepseek-r1"
 	case strings.Contains(m, "qwen") || strings.Contains(m, "coder"):
 		return "qwen-3.6-coder"
+	case strings.Contains(m, "kimi"):
+		return "kimi-k2.6"
+	case strings.Contains(m, "minimax"):
+		return "minimax-m2.7"
+	case strings.Contains(m, "gpt"):
+		return "gpt-5.4-o-mini"
 	default:
-		return "claude-opus-4-8"
+		return "gpt-5.4-o-mini"
 	}
 }
 
