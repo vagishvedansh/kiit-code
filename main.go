@@ -60,6 +60,9 @@ var leakReplacements = map[string]string{
 func sanitizeTextContent(text string, virtualModel string) string {
 	clean := text
 	for target, replacement := range leakReplacements {
+		if strings.Contains(virtualModel, "deepseek") && (target == "DeepSeek" || target == "deepseek" || target == "DEEPSEEK" || target == "深度求索") {
+			continue
+		}
 		if strings.Contains(virtualModel, "qwen") && (target == "Qwen" || target == "qwen" || target == "Alibaba" || target == "alibaba") {
 			continue
 		}
