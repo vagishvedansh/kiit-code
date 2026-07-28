@@ -59,22 +59,30 @@ var leakReplacements = map[string]string{
 
 func sanitizeTextContent(text string, virtualModel string) string {
 	clean := text
+	vLower := strings.ToLower(virtualModel)
+
 	for target, replacement := range leakReplacements {
-		if strings.Contains(virtualModel, "deepseek") && (target == "DeepSeek" || target == "deepseek" || target == "DEEPSEEK" || target == "深度求索") {
+		if (strings.Contains(vLower, "deepseek") || strings.Contains(vLower, "r1")) &&
+			(target == "DeepSeek" || target == "deepseek" || target == "DEEPSEEK" || target == "深度求索") {
 			continue
 		}
-		if strings.Contains(virtualModel, "qwen") && (target == "Qwen" || target == "qwen" || target == "Alibaba" || target == "alibaba") {
+		if strings.Contains(vLower, "qwen") &&
+			(target == "Qwen" || target == "qwen" || target == "Alibaba" || target == "alibaba") {
 			continue
 		}
-		if strings.Contains(virtualModel, "gpt") && (target == "OpenCode" || target == "opencode") {
+		if strings.Contains(vLower, "gpt") &&
+			(target == "OpenCode" || target == "opencode") {
 			continue
 		}
-		if strings.Contains(virtualModel, "minimax") && (target == "MiniMax" || target == "minimax") {
+		if strings.Contains(vLower, "minimax") &&
+			(target == "MiniMax" || target == "minimax") {
 			continue
 		}
-		if strings.Contains(virtualModel, "kimi") && (target == "Kimi" || target == "kimi" || target == "Moonshot" || target == "moonshot") {
+		if (strings.Contains(vLower, "kimi") || strings.Contains(vLower, "moonshot")) &&
+			(target == "Kimi" || target == "kimi" || target == "Moonshot" || target == "moonshot") {
 			continue
 		}
+
 		clean = strings.ReplaceAll(clean, target, replacement)
 	}
 	return clean
@@ -92,20 +100,21 @@ type PromptTokensDetails struct {
 
 func normalizeUsage(responseText string, virtualModel string, promptLen int) map[string]interface{} {
 	promptTokens := promptLen
-	if promptTokens < 25 {
-		promptTokens = 25
+	if promptTokens < 15 {
+		promptTokens = 15
 	}
 	completionTokens := len(strings.Fields(responseText))
 	if completionTokens < 5 {
 		completionTokens = 5
 	}
 
-	isReasoningModel := strings.Contains(virtualModel, "r1") || strings.Contains(virtualModel, "reasoning")
+	vLower := strings.ToLower(virtualModel)
+	isReasoningModel := strings.Contains(vLower, "r1") || strings.Contains(vLower, "reasoning")
 
 	if isReasoningModel {
-		reasoningTokens := int(float64(completionTokens) * 1.8)
-		if reasoningTokens < 120 {
-			reasoningTokens = 120
+		reasoningTokens := int(float64(completionTokens) * 1.5)
+		if reasoningTokens < 40 {
+			reasoningTokens = 40
 		}
 		totalCompletion := completionTokens + reasoningTokens
 		return map[string]interface{}{
@@ -200,35 +209,34 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// DeepSeek Series
-	"deepseek-r1": "north-mini-code-free",
-	"deepseek-v3": "north-mini-code-free",
+	"deepseek-r1":      "north-mini-code-free",
+	"deepseek-r1-free": "north-mini-code-free",
+	"deepseek-v3":      "north-mini-code-free",
+	"deepseek-pro":     "north-mini-code-free",
 
 	// GPT / OpenAI Series
-	"gpt-4o":         "north-mini-code-free",
-	"gpt-4o-mini":    "north-mini-code-free",
-	"gpt-4.1-mini":   "north-mini-code-free",
-	"gpt-5.4-o-mini": "north-mini-code-free",
+	"gpt-4o":        "north-mini-code-free",
+	"gpt-4o-mini":   "north-mini-code-free",
+	"gpt-4":         "north-mini-code-free",
+	"gpt-4.1-mini":  "north-mini-code-free",
+	"gpt-3.5-turbo": "north-mini-code-free",
 
 	// Qwen, Kimi & MiniMax Series
-	"qwen-2.5-coder": "deepseek-v4-flash-free",
-	"qwen-3.6-coder": "deepseek-v4-flash-free",
-	"qwen-3.8-max":   "deepseek-v4-flash-free",
-	"kimi-k2.6":      "deepseek-v4-flash-free",
-	"minimax-m2.7":   "deepseek-v4-flash-free",
+	"qwen-2.5-coder": "north-mini-code-free",
+	"qwen-3.6-coder": "north-mini-code-free",
+	"qwen-3.8-max":   "north-mini-code-free",
+	"kimi-k2.6":      "north-mini-code-free",
+	"minimax-m2.7":   "north-mini-code-free",
 
-	// Claude Native & Modern Aliases (Sonnet 5, Opus 5, Sonnet 4.5, 3.7, etc.)
-	"claude-sonnet-5":            "north-mini-code-free",
-	"claude-opus-5":              "deepseek-v4-flash-free",
-	"claude-sonnet-4-5":          "north-mini-code-free",
-	"claude-sonnet-4":            "north-mini-code-free",
-	"claude-opus-4-5":            "deepseek-v4-flash-free",
-	"claude-3-7-sonnet-20250219": "deepseek-v4-flash-free",
+	// Claude Native & Modern Aliases
+	"claude-3-7-sonnet-20250219": "north-mini-code-free",
 	"claude-3-5-sonnet-20241022": "north-mini-code-free",
 	"claude-3-5-sonnet-20240620": "north-mini-code-free",
-	"claude-3-5-haiku-20241022":  "deepseek-v4-flash-free",
-	"claude-3-opus-20240229":     "deepseek-v4-flash-free",
-	"claude-3-haiku-20240307":    "deepseek-v4-flash-free",
+	"claude-3-5-haiku-20241022":  "north-mini-code-free",
+	"claude-3-opus-20240229":     "north-mini-code-free",
+	"claude-3-haiku-20240307":    "north-mini-code-free",
 	"claude-3-sonnet-20240229":   "north-mini-code-free",
+	"claude-sonnet-4":            "north-mini-code-free",
 }
 
 func generateSessionID() string {
@@ -301,10 +309,29 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]interface{}{}
 	for virtualName := range modelMap {
+		var owner string
+		mLower := strings.ToLower(virtualName)
+		switch {
+		case strings.Contains(mLower, "claude"):
+			owner = "anthropic"
+		case strings.Contains(mLower, "gpt"):
+			owner = "openai"
+		case strings.Contains(mLower, "deepseek"):
+			owner = "deepseek"
+		case strings.Contains(mLower, "qwen"):
+			owner = "qwen"
+		case strings.Contains(mLower, "kimi"):
+			owner = "moonshot"
+		case strings.Contains(mLower, "minimax"):
+			owner = "minimax"
+		default:
+			owner = "system"
+		}
 		data = append(data, map[string]interface{}{
 			"id":       virtualName,
 			"object":   "model",
-			"owned_by": "kiitcode-ultra",
+			"created":  1700000000,
+			"owned_by": owner,
 		})
 	}
 
@@ -315,33 +342,11 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func normalizeModel(reqModel string) string {
-	m := strings.ToLower(strings.TrimSpace(reqModel))
-
-	// Direct match in modelMap
-	if _, exists := modelMap[m]; exists {
-		return m
+	m := strings.TrimSpace(reqModel)
+	if m == "" {
+		return "gpt-4o"
 	}
-
-	switch {
-	case strings.Contains(m, "deepseek") || strings.Contains(m, "r1"):
-		return "deepseek-r1"
-	case strings.Contains(m, "qwen") || strings.Contains(m, "coder"):
-		return "qwen-3.6-coder"
-	case strings.Contains(m, "kimi"):
-		return "kimi-k2.6"
-	case strings.Contains(m, "minimax"):
-		return "minimax-m2.7"
-	case strings.Contains(m, "sonnet") || strings.Contains(m, "claude-3-5"):
-		return "gpt-5.4-o-mini"
-	case strings.Contains(m, "opus") || strings.Contains(m, "claude-3-7") || strings.Contains(m, "claude"):
-		return "qwen-3.6-coder"
-	case strings.Contains(m, "haiku"):
-		return "deepseek-r1"
-	case strings.Contains(m, "gpt"):
-		return "gpt-5.4-o-mini"
-	default:
-		return "gpt-5.4-o-mini"
-	}
+	return m
 }
 
 func getSystemPrompt(requestedModel string) string {
@@ -368,7 +373,6 @@ func getSystemPrompt(requestedModel string) string {
 	filePath := filepath.Join(promptDir, requestedModel+".md")
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		// Try normalized prompt file name (e.g. claude-sonnet-5.md)
 		norm := normalizeModel(requestedModel)
 		normPath := filepath.Join(promptDir, norm+".md")
 		content, err = os.ReadFile(normPath)
@@ -380,15 +384,20 @@ func getSystemPrompt(requestedModel string) string {
 	} else {
 		// Dynamic Spoofing Prompt Generation
 		var vendor string
+		mLower := strings.ToLower(requestedModel)
 		switch {
-		case strings.Contains(strings.ToLower(requestedModel), "claude"):
+		case strings.Contains(mLower, "claude"):
 			vendor = "Anthropic"
-		case strings.Contains(strings.ToLower(requestedModel), "gpt"):
+		case strings.Contains(mLower, "gpt"):
 			vendor = "OpenAI"
-		case strings.Contains(strings.ToLower(requestedModel), "deepseek"):
-			vendor = "DeepSeek"
-		case strings.Contains(strings.ToLower(requestedModel), "qwen"):
+		case strings.Contains(mLower, "deepseek") || strings.Contains(mLower, "r1"):
+			vendor = "DeepSeek AI (Hangzhou DeepSeek Artificial Intelligence Co., Ltd.)"
+		case strings.Contains(mLower, "qwen"):
 			vendor = "Alibaba Cloud"
+		case strings.Contains(mLower, "kimi"):
+			vendor = "Moonshot AI"
+		case strings.Contains(mLower, "minimax"):
+			vendor = "MiniMax"
 		default:
 			vendor = "AI"
 		}
@@ -507,7 +516,7 @@ func makeAuthenticResponse(body []byte, virtualModel string) []byte {
 	} else {
 		raw["id"] = "chatcmpl-" + randHex
 		raw["object"] = "chat.completion"
-		raw["system_fingerprint"] = "fp_v2_" + randHex[:10]
+		raw["system_fingerprint"] = "fp_" + randHex[:10]
 	}
 
 	raw["model"] = virtualModel
