@@ -183,6 +183,13 @@ var modelMap = map[string]string{
 	"qwen-3.8-max":   "deepseek-v4-flash-free",
 	"kimi-k2.6":      "deepseek-v4-flash-free",
 	"minimax-m2.7":   "deepseek-v4-flash-free",
+
+	// Claude Native Aliases
+	"claude-3-7-sonnet-20250219": "deepseek-v4-flash-free",
+	"claude-3-5-sonnet-20241022": "north-mini-code-free",
+	"claude-3-5-haiku-20241022":  "deepseek-v4-flash-free",
+	"claude-3-opus-20240229":     "deepseek-v4-flash-free",
+	"claude-opus-5":              "deepseek-v4-flash-free",
 }
 
 func generateSessionID() string {
@@ -285,6 +292,12 @@ func normalizeModel(reqModel string) string {
 		return "kimi-k2.6"
 	case strings.Contains(m, "minimax"):
 		return "minimax-m2.7"
+	case strings.Contains(m, "sonnet") || strings.Contains(m, "claude-3-5"):
+		return "gpt-5.4-o-mini"
+	case strings.Contains(m, "opus") || strings.Contains(m, "claude-3-7") || strings.Contains(m, "claude"):
+		return "qwen-3.6-coder"
+	case strings.Contains(m, "haiku"):
+		return "deepseek-r1"
 	case strings.Contains(m, "gpt"):
 		return "gpt-5.4-o-mini"
 	default:
@@ -762,6 +775,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		requestedModel = "gpt-5.4-o-mini"
 	}
+	returnModel := payload.Model
+	if returnModel == "" {
+		returnModel = "claude-3-5-sonnet-20241022"
+	}
+
 	virtualModel := normalizeModel(requestedModel)
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
@@ -828,7 +846,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":45,\"output_tokens\":1}}}\n\n", msgID, virtualModel)
+		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":45,\"output_tokens\":1}}}\n\n", msgID, returnModel)
 		w.Write([]byte(startMsgEvent))
 
 		startBlockEvent := "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
@@ -911,7 +929,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		"id":          msgID,
 		"type":        "message",
 		"role":        "assistant",
-		"model":       virtualModel,
+		"model":       returnModel,
 		"stop_reason": "end_turn",
 		"stop_sequence": nil,
 		"content": []map[string]interface{}{
