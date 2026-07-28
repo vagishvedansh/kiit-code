@@ -275,14 +275,15 @@ func newTorClient() *http.Client {
 
 	proxyURL, err := url.Parse(proxyURLStr)
 	if err == nil {
+		tr := &http.Transport{
+			Proxy:               http.ProxyURL(proxyURL),
+			DisableKeepAlives:   true,
+			MaxIdleConns:        -1,
+			IdleConnTimeout:     1 * time.Second,
+		}
 		return &http.Client{
-			Transport: &http.Transport{
-				Proxy:               http.ProxyURL(proxyURL),
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
-			},
-			Timeout: 30 * time.Second,
+			Transport: tr,
+			Timeout:   35 * time.Second,
 		}
 	}
 	return sharedDirectClient
@@ -319,14 +320,20 @@ func renewTorIP(controlAddr, controlPassword string) error {
 	}
 	defer conn.Close()
 
-	fmt.Fprintf(conn, "AUTHENTICATE \"%s\"\r\n", controlPassword)
+	if controlPassword != "" {
+		fmt.Fprintf(conn, "AUTHENTICATE \"%s\"\r\n", controlPassword)
+	} else {
+		fmt.Fprintf(conn, "AUTHENTICATE\r\n")
+	}
+
 	buf := make([]byte, 512)
 	conn.Read(buf)
 
 	fmt.Fprintf(conn, "SIGNAL NEWNYM\r\n")
 	conn.Read(buf)
 
-	time.Sleep(300 * time.Millisecond)
+	// Give Tor 2 seconds to establish the new circuit
+	time.Sleep(2000 * time.Millisecond)
 	return nil
 }
 
@@ -784,31 +791,36 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 10; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
+	for attempt := 0; attempt < 5; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-		currIP := getRandomIP()
-		upstreamReq.Header.Set("X-Forwarded-For", currIP)
-		upstreamReq.Header.Set("X-Real-IP", currIP)
-		upstreamReq.Header.Set("CF-Connecting-IP", currIP)
+		
+		// Remove fake IP spoofing headers to prevent Cloudflare anomaly flag
+		upstreamReq.Header.Del("X-Forwarded-For")
+		upstreamReq.Header.Del("X-Real-IP")
+		upstreamReq.Header.Del("CF-Connecting-IP")
 
 		client := newTorClient()
 		resp, errDo = client.Do(upstreamReq)
+
 		if errDo == nil && resp.StatusCode == http.StatusOK {
 			cancel()
 			break
 		}
+
 		if resp != nil {
-			log.Printf("[WARN] Upstream HTTP %d (attempt %d/10), rotating Tor IP...", resp.StatusCode, attempt+1)
+			log.Printf("[WARN] Upstream HTTP %d (attempt %d/5). Rotating Tor IP...", resp.StatusCode, attempt+1)
 			resp.Body.Close()
 		} else {
-			log.Printf("[WARN] Upstream connection error: %v (attempt %d/10), rotating Tor IP...", errDo, attempt+1)
+			log.Printf("[WARN] Upstream connection error: %v (attempt %d/5). Rotating Tor IP...", errDo, attempt+1)
 		}
 		cancel()
+
+		// Trigger NEWNYM signal and wait 2 seconds for fresh circuit
 		tryRotateIP()
-		time.Sleep(100 * time.Millisecond)
 	}
 
 	if errDo != nil || resp == nil {
