@@ -823,7 +823,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		resp, errDo = client.Do(upstreamReq)
 		<-torSem
 
-		if errDo == nil && resp.StatusCode == http.StatusOK {
+		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			cancel()
 			break
 		}
@@ -1053,7 +1053,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		resp, errDo = client.Do(upstreamReq)
 		<-torSem
 
-		if errDo == nil && resp.StatusCode == http.StatusOK {
+		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			cancel()
 			break
 		}
