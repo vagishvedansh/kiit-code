@@ -794,9 +794,18 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var openAIMessages []ChatMessage
+	proxyPrompt := getSystemPrompt(virtualModel)
 	sysContent := parseAnthropicContent(payload.System)
+	combinedSys := proxyPrompt
 	if sysContent != "" {
-		openAIMessages = append(openAIMessages, ChatMessage{Role: "system", Content: sysContent})
+		if combinedSys != "" {
+			combinedSys += "\n\n" + sysContent
+		} else {
+			combinedSys = sysContent
+		}
+	}
+	if combinedSys != "" {
+		openAIMessages = append(openAIMessages, ChatMessage{Role: "system", Content: combinedSys})
 	}
 
 	for _, msg := range payload.Messages {
