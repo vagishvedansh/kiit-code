@@ -263,26 +263,42 @@ var sharedDirectClient = &http.Client{
 	},
 }
 
+var (
+	torTransportLock sync.Mutex
+	currentTorClient *http.Client
+)
+
 func newTorClient() *http.Client {
+	torTransportLock.Lock()
+	defer torTransportLock.Unlock()
+
+	if currentTorClient != nil {
+		return currentTorClient
+	}
+
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
 	}
-	if proxyURLStr != "" {
-		proxyURL, err := url.Parse(proxyURLStr)
-		if err == nil {
-			transport := &http.Transport{
-				Proxy:               http.ProxyURL(proxyURL),
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
-			}
-			return &http.Client{
-				Transport: transport,
-				Timeout:   30 * time.Second,
-			}
-		}
+	if proxyURLStr == "" {
+		proxyURLStr = "socks5://127.0.0.1:9050"
 	}
+
+	proxyURL, err := url.Parse(proxyURLStr)
+	if err == nil && proxyURLStr != "" {
+		transport := &http.Transport{
+			Proxy:               http.ProxyURL(proxyURL),
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+		}
+		currentTorClient = &http.Client{
+			Transport: transport,
+			Timeout:   30 * time.Second,
+		}
+		return currentTorClient
+	}
+
 	return sharedDirectClient
 }
 
@@ -291,9 +307,32 @@ func newDirectClient() *http.Client {
 }
 
 func tryRotateIP() {
-	if err := renewTorIP("127.0.0.1:9051", ""); err != nil {
-		log.Printf("[WARN] Tor IP rotation failed: %v", err)
+	controlAddr := os.Getenv("TOR_CONTROL_ADDR")
+	if controlAddr == "" {
+		controlAddr = os.Getenv("TOR_CONTROL_PORT")
 	}
+	if controlAddr == "" {
+		controlAddr = "127.0.0.1:9051"
+	}
+	controlPassword := os.Getenv("TOR_CONTROL_PASSWORD")
+	if controlPassword == "" {
+		controlPassword = os.Getenv("TOR_PASSWORD")
+	}
+
+	if err := renewTorIP(controlAddr, controlPassword); err != nil {
+		log.Printf("[WARN] Tor IP rotation failed on %s: %v", controlAddr, err)
+	} else {
+		log.Printf("[INFO] Tor IP successfully rotated via %s (SIGNAL NEWNYM)", controlAddr)
+	}
+
+	torTransportLock.Lock()
+	if currentTorClient != nil {
+		if tr, ok := currentTorClient.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		currentTorClient = nil
+	}
+	torTransportLock.Unlock()
 }
 
 func renewTorIP(controlAddr, controlPassword string) error {
@@ -310,7 +349,7 @@ func renewTorIP(controlAddr, controlPassword string) error {
 	fmt.Fprintf(conn, "SIGNAL NEWNYM\r\n")
 	conn.Read(buf)
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	return nil
 }
 
