@@ -264,40 +264,27 @@ var sharedDirectClient = &http.Client{
 	},
 }
 
-var (
-	torTransportLock sync.Mutex
-	currentTorClient *http.Client
-)
-
 func newTorClient() *http.Client {
-	torTransportLock.Lock()
-	defer torTransportLock.Unlock()
-
-	if currentTorClient != nil {
-		return currentTorClient
-	}
-
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
 	}
-	if proxyURLStr != "" {
-		proxyURL, err := url.Parse(proxyURLStr)
-		if err == nil {
-			transport := &http.Transport{
+	if proxyURLStr == "" {
+		proxyURLStr = "socks5://127.0.0.1:9050"
+	}
+
+	proxyURL, err := url.Parse(proxyURLStr)
+	if err == nil {
+		return &http.Client{
+			Transport: &http.Transport{
 				Proxy:               http.ProxyURL(proxyURL),
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
 				IdleConnTimeout:     90 * time.Second,
-			}
-			currentTorClient = &http.Client{
-				Transport: transport,
-				Timeout:   30 * time.Second,
-			}
-			return currentTorClient
+			},
+			Timeout: 30 * time.Second,
 		}
 	}
-
 	return sharedDirectClient
 }
 
@@ -321,17 +308,8 @@ func tryRotateIP() {
 	if err := renewTorIP(controlAddr, controlPassword); err != nil {
 		log.Printf("[WARN] Tor IP rotation failed on %s: %v", controlAddr, err)
 	} else {
-		log.Printf("[INFO] Tor IP successfully rotated via %s (SIGNAL NEWNYM)", controlAddr)
+		log.Printf("[INFO] Tor IP rotated successfully via %s", controlAddr)
 	}
-
-	torTransportLock.Lock()
-	if currentTorClient != nil {
-		if tr, ok := currentTorClient.Transport.(*http.Transport); ok {
-			tr.CloseIdleConnections()
-		}
-		currentTorClient = nil
-	}
-	torTransportLock.Unlock()
 }
 
 func renewTorIP(controlAddr, controlPassword string) error {
@@ -348,7 +326,7 @@ func renewTorIP(controlAddr, controlPassword string) error {
 	fmt.Fprintf(conn, "SIGNAL NEWNYM\r\n")
 	conn.Read(buf)
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	return nil
 }
 
@@ -811,8 +789,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 4; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+	for attempt := 0; attempt < 15; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -827,17 +805,15 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if resp != nil {
-			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden || resp.StatusCode == 503 || resp.StatusCode == 502 {
-				log.Printf("[WARN] Upstream HTTP %d (attempt %d/4), rotating IP and retrying...", resp.StatusCode, attempt+1)
-				resp.Body.Close()
-				cancel()
-				tryRotateIP()
-				client = newTorClient()
-				continue
-			}
+			log.Printf("[WARN] Upstream HTTP %d (attempt %d/15), rotating Tor IP...", resp.StatusCode, attempt+1)
 			resp.Body.Close()
+		} else {
+			log.Printf("[WARN] Upstream connection error: %v (attempt %d/15), rotating Tor IP...", errDo, attempt+1)
 		}
 		cancel()
+		tryRotateIP()
+		client = newTorClient()
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if errDo != nil || resp == nil {
