@@ -806,8 +806,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 10; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	for attempt := 0; attempt < 12; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1037,8 +1037,8 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 10; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	for attempt := 0; attempt < 12; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
 		upstreamReq.Header.Set("Content-Type", "application/json")
