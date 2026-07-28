@@ -280,23 +280,21 @@ func newTorClient() *http.Client {
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
 	}
-	if proxyURLStr == "" {
-		proxyURLStr = "socks5://127.0.0.1:9050"
-	}
-
-	proxyURL, err := url.Parse(proxyURLStr)
-	if err == nil && proxyURLStr != "" {
-		transport := &http.Transport{
-			Proxy:               http.ProxyURL(proxyURL),
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 20,
-			IdleConnTimeout:     90 * time.Second,
+	if proxyURLStr != "" {
+		proxyURL, err := url.Parse(proxyURLStr)
+		if err == nil {
+			transport := &http.Transport{
+				Proxy:               http.ProxyURL(proxyURL),
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			}
+			currentTorClient = &http.Client{
+				Transport: transport,
+				Timeout:   30 * time.Second,
+			}
+			return currentTorClient
 		}
-		currentTorClient = &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		}
-		return currentTorClient
 	}
 
 	return sharedDirectClient
