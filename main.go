@@ -1000,7 +1000,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	virtualModel := normalizeModel(requestedModel)
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "deepseek-v4-flash-free"
+		targetModel = "north-mini-code-free"
 	}
 
 	var openAIMessages []ChatMessage
