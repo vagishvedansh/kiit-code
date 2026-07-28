@@ -244,30 +244,40 @@ func generateSessionID() string {
 	return "ses_" + hex.EncodeToString(b)
 }
 
+var sharedDirectClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func newTorClient() *http.Client {
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
 	}
-	if proxyURLStr == "" {
-		proxyURLStr = "socks5://127.0.0.1:9050"
-	}
-
-	proxyURL, err := url.Parse(proxyURLStr)
-	if err == nil && proxyURLStr != "" {
-		transport := &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
+	if proxyURLStr != "" {
+		proxyURL, err := url.Parse(proxyURLStr)
+		if err == nil {
+			transport := &http.Transport{
+				Proxy:               http.ProxyURL(proxyURL),
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			}
+			return &http.Client{
+				Transport: transport,
+				Timeout:   30 * time.Second,
+			}
 		}
-		return &http.Client{
-			Transport: transport,
-			Timeout:   120 * time.Second,
-		}
 	}
-	return newDirectClient()
+	return sharedDirectClient
 }
 
 func newDirectClient() *http.Client {
-	return &http.Client{Timeout: 120 * time.Second}
+	return sharedDirectClient
 }
 
 func tryRotateIP() {
