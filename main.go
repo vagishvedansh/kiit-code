@@ -296,6 +296,7 @@ func newDirectClient() *http.Client {
 var (
 	rotateLock     sync.Mutex
 	lastRotateTime time.Time
+	torSem         = make(chan struct{}, 6)
 )
 
 func tryRotateIP() {
@@ -818,7 +819,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Del("CF-Connecting-IP")
 
 		client := newTorClient()
+		torSem <- struct{}{}
 		resp, errDo = client.Do(upstreamReq)
+		<-torSem
 
 		if errDo == nil && resp.StatusCode == http.StatusOK {
 			cancel()
@@ -1046,7 +1049,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Del("CF-Connecting-IP")
 
 		client := newTorClient()
+		torSem <- struct{}{}
 		resp, errDo = client.Do(upstreamReq)
+		<-torSem
 
 		if errDo == nil && resp.StatusCode == http.StatusOK {
 			cancel()
