@@ -773,7 +773,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	for attempt := 0; attempt < 15; attempt++ {
+	for attempt := 0; attempt < 30; attempt++ {
 		upstreamReq, _ := http.NewRequest(http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
