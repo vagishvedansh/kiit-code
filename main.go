@@ -144,13 +144,24 @@ type ChatRequest struct {
 }
 
 var modelMap = map[string]string{
-	"claude-opus-5":       "deepseek-v4-flash-free",
-	"claude-opus-4-8":     "deepseek-v4-flash-free",
-	"claude-sonnet-5":     "deepseek-v4-flash-free",
-	"claude-fable-5":      "deepseek-v4-flash-free",
-	"claude-4.8-thinking": "nemotron-3-ultra-free",
-	"gpt-5.6-sol":         "nemotron-3-ultra-free",
-	"qwen-3.6-coder":      "nemotron-3-ultra-free",
+	// DeepSeek Series
+	"deepseek-r1":      "deepseek-v4-flash-free",
+	"deepseek-r1-free": "deepseek-v4-flash-free",
+	"deepseek-pro":     "deepseek-v4-flash-free",
+	"deepseek-v3":      "deepseek-v4-flash-free",
+
+	// GPT / OpenAI Series
+	"gpt-4o":         "north-mini-code-free",
+	"gpt-4o-mini":    "north-mini-code-free",
+	"gpt-4.1-mini":   "north-mini-code-free",
+	"gpt-5.4-o-mini": "north-mini-code-free",
+
+	// Qwen, Kimi & MiniMax Series
+	"qwen-2.5-coder": "laguna-s-2.1-free",
+	"qwen-3.6-coder": "laguna-s-2.1-free",
+	"qwen-3.8-max":   "laguna-s-2.1-free",
+	"kimi-k2.6":      "ling-3.0-flash-free",
+	"minimax-m2.7":   "ling-3.0-flash-free",
 }
 
 func generateSessionID() string {
