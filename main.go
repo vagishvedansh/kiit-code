@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,6 +245,24 @@ func generateSessionID() string {
 }
 
 func newTorClient() *http.Client {
+	proxyURLStr := os.Getenv("TOR_PROXY_URL")
+	if proxyURLStr == "" {
+		proxyURLStr = os.Getenv("PROXY_URL")
+	}
+	if proxyURLStr == "" {
+		proxyURLStr = "socks5://127.0.0.1:9050"
+	}
+
+	proxyURL, err := url.Parse(proxyURLStr)
+	if err == nil && proxyURLStr != "" {
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		}
+		return &http.Client{
+			Transport: transport,
+			Timeout:   120 * time.Second,
+		}
+	}
 	return newDirectClient()
 }
 
