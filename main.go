@@ -157,9 +157,9 @@ var modelMap = map[string]string{
 	"gpt-5.4-o-mini": "north-mini-code-free",
 
 	// Qwen, Kimi & MiniMax Series
-	"qwen-2.5-coder": "laguna-s-2.1-free",
-	"qwen-3.6-coder": "laguna-s-2.1-free",
-	"qwen-3.8-max":   "laguna-s-2.1-free",
+	"qwen-2.5-coder": "deepseek-v4-flash-free",
+	"qwen-3.6-coder": "deepseek-v4-flash-free",
+	"qwen-3.8-max":   "deepseek-v4-flash-free",
 	"kimi-k2.6":      "ling-3.0-flash-free",
 	"minimax-m2.7":   "ling-3.0-flash-free",
 }
