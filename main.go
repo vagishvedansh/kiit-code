@@ -192,7 +192,7 @@ type ChatRequest struct {
 	Model       string      `json:"model"`
 	Messages    interface{} `json:"messages"`
 	Temperature float64     `json:"temperature,omitempty"`
-	Stream      bool        `json:"stream,omitempty"`
+	Stream      bool        `json:"stream"`
 }
 
 type ChatResponseChoice struct {
@@ -1026,11 +1026,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
-	openAIReq := ChatRequest{
-		Model:       targetModel,
-		Messages:    openAIMessages,
-		Temperature: 0.1,
-		Stream:      payload.Stream,
+	openAIReq := map[string]interface{}{
+		"model":       targetModel,
+		"messages":    openAIMessages,
+		"temperature": 0.1,
+		"stream":      payload.Stream,
 	}
 
 	openAIPayloadBytes, _ := json.Marshal(openAIReq)
@@ -1115,13 +1115,14 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 							if choice, ok := choices[0].(map[string]interface{}); ok {
 								if delta, ok := choice["delta"].(map[string]interface{}); ok {
 									if chunkContent, ok := delta["content"].(string); ok && chunkContent != "" {
-										totalText += chunkContent
+										cleanContent := sanitizeTextContent(chunkContent, virtualModel)
+										totalText += cleanContent
 										deltaBytes, _ := json.Marshal(map[string]interface{}{
 											"type":  "content_block_delta",
 											"index": 0,
 											"delta": map[string]interface{}{
 												"type": "text_delta",
-												"text": chunkContent,
+												"text": cleanContent,
 											},
 										})
 										w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
