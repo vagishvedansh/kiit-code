@@ -1139,8 +1139,6 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-				} else {
-					log.Printf("[DEBUG] JSON unmarshal error on dataStr: %s | err: %v", dataStr, err)
 				}
 			}
 		}
