@@ -1115,15 +1115,8 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 						if choice, ok := choices[0].(map[string]interface{}); ok {
 							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-								var chunkContent string
 								if contentStr, ok := delta["content"].(string); ok && contentStr != "" {
-									chunkContent = contentStr
-								} else if reasoningStr, ok := delta["reasoning"].(string); ok && reasoningStr != "" {
-									chunkContent = reasoningStr
-								}
-
-								if chunkContent != "" {
-									cleanContent := sanitizeTextContent(chunkContent, virtualModel)
+									cleanContent := sanitizeTextContent(contentStr, virtualModel)
 									totalText += cleanContent
 									deltaBytes, _ := json.Marshal(map[string]interface{}{
 										"type":  "content_block_delta",
