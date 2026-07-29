@@ -1097,45 +1097,41 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(startBlockEvent))
 		flusher.Flush()
 
-		reader := bufio.NewReader(resp.Body)
 		var totalText string
+		scanner := bufio.NewScanner(resp.Body)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
 
-		for {
-			line, errRead := reader.ReadString('\n')
-			if len(line) > 0 {
-				lineTrimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(lineTrimmed, "data: ") {
-					dataStr := strings.TrimPrefix(lineTrimmed, "data: ")
-					if dataStr == "[DONE]" {
-						break
-					}
-					var openChunk map[string]interface{}
-					if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
-						if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
-							if choice, ok := choices[0].(map[string]interface{}); ok {
-								if delta, ok := choice["delta"].(map[string]interface{}); ok {
-									if chunkContent, ok := delta["content"].(string); ok && chunkContent != "" {
-										cleanContent := sanitizeTextContent(chunkContent, virtualModel)
-										totalText += cleanContent
-										deltaBytes, _ := json.Marshal(map[string]interface{}{
-											"type":  "content_block_delta",
-											"index": 0,
-											"delta": map[string]interface{}{
-												"type": "text_delta",
-												"text": cleanContent,
-											},
-										})
-										w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
-										flusher.Flush()
-									}
+		for scanner.Scan() {
+			lineTrimmed := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(lineTrimmed, "data: ") {
+				dataStr := strings.TrimPrefix(lineTrimmed, "data: ")
+				if dataStr == "[DONE]" {
+					break
+				}
+				var openChunk map[string]interface{}
+				if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
+					if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+						if choice, ok := choices[0].(map[string]interface{}); ok {
+							if delta, ok := choice["delta"].(map[string]interface{}); ok {
+								if chunkContent, ok := delta["content"].(string); ok && chunkContent != "" {
+									cleanContent := sanitizeTextContent(chunkContent, virtualModel)
+									totalText += cleanContent
+									deltaBytes, _ := json.Marshal(map[string]interface{}{
+										"type":  "content_block_delta",
+										"index": 0,
+										"delta": map[string]interface{}{
+											"type": "text_delta",
+											"text": cleanContent,
+										},
+									})
+									w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+									flusher.Flush()
 								}
 							}
 						}
 					}
 				}
-			}
-			if errRead != nil {
-				break
 			}
 		}
 
