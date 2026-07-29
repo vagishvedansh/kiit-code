@@ -1103,11 +1103,18 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":45,\"output_tokens\":1}}}\n\n", msgID, returnModel)
 		w.Write([]byte(startMsgEvent))
 
-		startBlockEvent := "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
-		w.Write([]byte(startBlockEvent))
+		// Emit thinking content block (index 0)
+		thinkingBlockStart := `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+`
+		w.Write([]byte(thinkingBlockStart))
 		flusher.Flush()
 
 		var totalText string
+		var totalThinking string
+		var thinkingDone bool
+		var textBlockStarted bool
 		scanner := bufio.NewScanner(resp.Body)
 		buf := make([]byte, 64*1024)
 		scanner.Buffer(buf, 1024*1024)
@@ -1120,16 +1127,50 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				var openChunk map[string]interface{}
-				if err := json.Unmarshal([]byte(dataStr), &openChunk); err == nil {
+				if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
 					if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 						if choice, ok := choices[0].(map[string]interface{}); ok {
 							if delta, ok := choice["delta"].(map[string]interface{}); ok {
+
+								// Handle reasoning/thinking tokens
+								if reasoningStr, ok := delta["reasoning"].(string); ok && reasoningStr != "" {
+									totalThinking += reasoningStr
+									thinkDelta, _ := json.Marshal(map[string]interface{}{
+										"type":  "content_block_delta",
+										"index": 0,
+										"delta": map[string]interface{}{
+											"type":     "thinking_delta",
+											"thinking": reasoningStr,
+										},
+									})
+									w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(thinkDelta))))
+									flusher.Flush()
+								}
+
+								// Handle content tokens
 								if contentStr, ok := delta["content"].(string); ok && contentStr != "" {
+									// First content token: close thinking block, open text block
+									if !thinkingDone {
+										thinkingDone = true
+										// Close thinking block (index 0)
+										w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+										flusher.Flush()
+									}
+									if !textBlockStarted {
+										textBlockStarted = true
+										// Open text block (index 1)
+										textBlockStart := `event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+`
+										w.Write([]byte(textBlockStart))
+										flusher.Flush()
+									}
 									cleanContent := sanitizeTextContent(contentStr, virtualModel)
 									totalText += cleanContent
 									deltaBytes, _ := json.Marshal(map[string]interface{}{
 										"type":  "content_block_delta",
-										"index": 0,
+										"index": 1,
 										"delta": map[string]interface{}{
 											"type": "text_delta",
 											"text": cleanContent,
@@ -1145,8 +1186,19 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		stopBlockEvent := "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
-		w.Write([]byte(stopBlockEvent))
+		// Close any remaining open blocks
+		if !thinkingDone {
+			// No content tokens came, close thinking block
+			w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+		}
+		if textBlockStarted {
+			// Close text block (index 1)
+			w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"))
+		} else {
+			// No content at all — open and immediately close a text block so the message has text content
+			w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
+			w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"))
+		}
 
 		outTokenCount := len(strings.Fields(totalText))
 		if outTokenCount == 0 {
