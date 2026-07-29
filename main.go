@@ -1078,6 +1078,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	msgID := "msg_" + generateSessionID()
 
 	if payload.Stream && resp.StatusCode == http.StatusOK {
+		log.Printf("[INFO] Upstream stream response status: %d | Content-Type: %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -1110,11 +1111,18 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				var openChunk map[string]interface{}
-				if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
+				if err := json.Unmarshal([]byte(dataStr), &openChunk); err == nil {
 					if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 						if choice, ok := choices[0].(map[string]interface{}); ok {
 							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-								if chunkContent, ok := delta["content"].(string); ok && chunkContent != "" {
+								var chunkContent string
+								if contentStr, ok := delta["content"].(string); ok && contentStr != "" {
+									chunkContent = contentStr
+								} else if reasoningStr, ok := delta["reasoning"].(string); ok && reasoningStr != "" {
+									chunkContent = reasoningStr
+								}
+
+								if chunkContent != "" {
 									cleanContent := sanitizeTextContent(chunkContent, virtualModel)
 									totalText += cleanContent
 									deltaBytes, _ := json.Marshal(map[string]interface{}{
@@ -1131,6 +1139,8 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
+				} else {
+					log.Printf("[DEBUG] JSON unmarshal error on dataStr: %s | err: %v", dataStr, err)
 				}
 			}
 		}
