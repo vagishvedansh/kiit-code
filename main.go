@@ -1036,9 +1036,15 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	openAIPayloadBytes, _ := json.Marshal(openAIReq)
 	var resp *http.Response
 	var errDo error
+	var cancelFunc context.CancelFunc
+
+	reqTimeout := 25 * time.Second
+	if payload.Stream {
+		reqTimeout = 120 * time.Second
+	}
 
 	for attempt := 0; attempt < 12; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), reqTimeout)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1054,7 +1060,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		<-torSem
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-			cancel()
+			cancelFunc = cancel
 			break
 		}
 
@@ -1067,6 +1073,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		cancel()
 
 		tryRotateIP()
+	}
+	if cancelFunc != nil {
+		defer cancelFunc()
 	}
 
 	if errDo != nil || resp == nil {
