@@ -794,8 +794,24 @@ func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []by
 				delete(msg, "reasoning_content")
 				delete(msg, "reasoning")
 				delete(msg, "reasoning_details")
-				if content, ok := msg["content"].(string); ok {
+				if content, ok := msg["content"].(string); ok && content != "" {
 					cleanedContent := sanitizeTextContent(content, virtualModel)
+					msg["content"] = cleanedContent
+					finalOutputText = cleanedContent
+				} else if contentObj, ok := msg["content"].([]interface{}); ok && len(contentObj) > 0 {
+					var sb strings.Builder
+					for _, block := range contentObj {
+						if blockMap, ok := block.(map[string]interface{}); ok {
+							if textVal, ok := blockMap["text"].(string); ok {
+								sb.WriteString(textVal)
+							}
+						}
+					}
+					cleanedContent := sanitizeTextContent(sb.String(), virtualModel)
+					msg["content"] = cleanedContent
+					finalOutputText = cleanedContent
+				} else if reasoningVal, ok := choiceMap["reasoning_content"].(string); ok && reasoningVal != "" {
+					cleanedContent := sanitizeTextContent(reasoningVal, virtualModel)
 					msg["content"] = cleanedContent
 					finalOutputText = cleanedContent
 				}
