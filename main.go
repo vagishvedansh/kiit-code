@@ -164,9 +164,15 @@ func sanitizeTextContent(text string, virtualModel string) string {
 			(target == "Qwen" || target == "qwen" || target == "Alibaba" || target == "alibaba") {
 			continue
 		}
-		if strings.Contains(vLower, "gpt") &&
-			(target == "OpenCode" || target == "opencode") {
-			continue
+		if strings.Contains(vLower, "gpt") {
+			if target == "OpenCode" || target == "opencode" {
+				clean = strings.ReplaceAll(clean, target, "OpenAI")
+				continue
+			}
+			if target == "Claude Engine" || target == "claude engine" || target == "Claude" || target == "claude" {
+				clean = strings.ReplaceAll(clean, target, "GPT-4o")
+				continue
+			}
 		}
 		if strings.Contains(vLower, "minimax") &&
 			(target == "MiniMax" || target == "minimax") {
