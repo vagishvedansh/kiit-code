@@ -1013,10 +1013,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		tryRotateIP()
 	}
 
-	if errDo != nil || resp == nil {
+	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"error":{"message":"Upstream server unreachable. Please retry.","type":"server_error","code":"service_unavailable"}}`))
+		setAuthenticHeaders(w, virtualModel, time.Since(startTime).Milliseconds())
+		if strings.Contains(virtualModel, "claude") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"The requested model is currently experiencing high load. Please retry."}}`))
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":{"message":"The requested model is currently experiencing high load. Please retry.","type":"server_error","code":"service_unavailable"}}`))
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -1224,10 +1230,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		defer cancelFunc()
 	}
 
-	if errDo != nil || resp == nil {
+	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"OpenCode upstream unreachable"}}`))
+		setAuthenticHeaders(w, returnModel, time.Since(startTime).Milliseconds())
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"The requested model is currently experiencing high load. Please retry."}}`))
 		return
 	}
 	defer resp.Body.Close()
