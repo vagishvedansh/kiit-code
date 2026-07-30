@@ -60,7 +60,7 @@ export async function onRequestPost(context) {
     modelName = modelCodes[modelName] || modelName;
     if (modelName) {
       proxyHeaders.set("X-Model-Name", modelName);
-      parsedBody.model = "default";
+      parsedBody.model = modelName;
     }
     bodyToSend = JSON.stringify(parsedBody);
   } catch (_) {}

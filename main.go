@@ -512,6 +512,32 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"running","engine":"go-kiitcode-core"}`))
 }
 
+var modelCreationDates = map[string]int64{
+	"gpt-4o":                      1715558400,
+	"gpt-4o-mini":                 1721260800,
+	"gpt-4-turbo":                 1712620800,
+	"gpt-4":                       1687881600,
+	"gpt-3.5-turbo":               1677628800,
+	"gpt-4.1-mini":                1721260800,
+	"claude-3-7-sonnet-20250219":  1740441600,
+	"claude-3-5-sonnet-20241022":  1729555200,
+	"claude-3-5-sonnet-20240620":  1718841600,
+	"claude-3-5-haiku-20241022":   1729555200,
+	"claude-3-opus-20240229":      1709164800,
+	"claude-3-haiku-20240307":     1709769600,
+	"claude-3-sonnet-20240229":    1709164800,
+	"claude-sonnet-4":             1729555200,
+	"deepseek-reasoner":           1737331200,
+	"deepseek-chat":               1735171200,
+	"deepseek-r1":                 1737331200,
+	"deepseek-v3":                 1735171200,
+	"qwen-2.5-coder":              1726704000,
+	"qwen-3.6-coder":              1726704000,
+	"qwen-3.8-max":                1705363200,
+	"kimi-k2.6":                   1697414400,
+	"minimax-m2.7":                1712620800,
+}
+
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]interface{}{}
 	for virtualName := range modelMap {
@@ -533,10 +559,14 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 		default:
 			owner = "system"
 		}
+		createdTS := modelCreationDates[virtualName]
+		if createdTS == 0 {
+			createdTS = 1715558400
+		}
 		data = append(data, map[string]interface{}{
 			"id":       virtualName,
 			"object":   "model",
-			"created":  1700000000,
+			"created":  createdTS,
 			"owned_by": owner,
 		})
 	}
