@@ -13,7 +13,7 @@ export async function onRequest(context) {
         <div class="card">
           <h1>⚡ KIIT Code API Gateway</h1>
           <p>Status: <span style="color:#3fb950;">ONLINE</span></p>
-          <p>Base URL: <code>https://kiit-code.pages.dev/v1</code></p>
+          <p>Base URL: <code>https://kiitcode.pages.dev/v1</code></p>
         </div>
       </body>
     </html>
