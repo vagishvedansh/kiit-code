@@ -404,11 +404,13 @@ var modelMap = map[string]string{
 	"claude-sonnet-4":            "north-mini-code-free",
 
 	// Reasoning, Code & Specialist
-	"deepseek-r1":    "big-pickle",
-	"deepseek-v3":    "deepseek-v4-flash-free",
-	"qwen-2.5-coder": "north-mini-code-free",
-	"qwen-3.6-coder": "north-mini-code-free",
-	"minimax-m2.7":   "laguna-s-2.1-free",
+	"deepseek-r1":      "big-pickle",
+	"deepseek-r1-free": "deepseek-v4-flash-free",
+	"deepseek-pro":     "deepseek-v4-flash-free",
+	"deepseek-v3":      "deepseek-v4-flash-free",
+	"qwen-2.5-coder":   "north-mini-code-free",
+	"qwen-3.6-coder":   "north-mini-code-free",
+	"minimax-m2.7":     "laguna-s-2.1-free",
 }
 
 func getUpstreamConfig(targetModel string) (string, string) {
