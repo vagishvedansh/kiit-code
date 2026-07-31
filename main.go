@@ -395,8 +395,11 @@ var modelMap = map[string]string{
 	"qwen-2.5-coder": "north-mini-code-free",
 	"qwen-3.6-coder": "north-mini-code-free",
 	"qwen-3.8-max":   "north-mini-code-free",
-	"kimi-k2.6":      "north-mini-code-free",
-	"minimax-m2.7":   "north-mini-code-free",
+	// Moonshot / Kimi Series -> moonshotai/kimi-k3-free (TokenRouter)
+	"kimi-k3":            "moonshotai/kimi-k3-free",
+	"moonshotai/kimi-k3": "moonshotai/kimi-k3-free",
+	"kimi-k2.6":          "moonshotai/kimi-k3-free",
+	"minimax-m2.7":       "north-mini-code-free",
 
 	// Claude Native & Modern Aliases -> north-mini-code-free
 	"claude-3-7-sonnet-20250219": "north-mini-code-free",
@@ -560,6 +563,7 @@ var modelCreationDates = map[string]int64{
 	"qwen-3.6-coder":              1726704000,
 	"qwen-3.8-max":                1705363200,
 	"kimi-k2.6":                   1697414400,
+	"kimi-k3":                     1735171200,
 	"minimax-m2.7":                1712620800,
 }
 
