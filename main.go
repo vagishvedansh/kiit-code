@@ -462,6 +462,30 @@ func newTorClient() *http.Client {
 	return sharedDirectClient
 }
 
+// newStreamClient returns an HTTP client suitable for long-lived SSE streams:
+// it has no total request timeout (which would kill a stream mid-response) but
+// still bounds how long we wait for the upstream to send response headers.
+func newStreamClient() *http.Client {
+	proxyURLStr := os.Getenv("TOR_PROXY_URL")
+	if proxyURLStr == "" {
+		proxyURLStr = os.Getenv("PROXY_URL")
+	}
+
+	tr := &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 35 * time.Second,
+	}
+	if proxyURLStr != "" {
+		if proxyURL, err := url.Parse(proxyURLStr); err == nil {
+			tr.Proxy = http.ProxyURL(proxyURL)
+			tr.DisableKeepAlives = true
+		}
+	}
+	return &http.Client{Transport: tr}
+}
+
 var (
 	rotateLock     sync.Mutex
 	lastRotateTime time.Time
@@ -1053,8 +1077,26 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
+	// Use the streaming client (no total timeout) so long SSE streams are not
+	// killed mid-response; the per-attempt context still bounds header wait.
+	reqClient := newTorClient()
+	if reqPayload.Stream {
+		reqClient = newStreamClient()
+	}
+
 	for attempt := 0; attempt < 12; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
+		// For streaming, do NOT attach a total deadline to the context: the
+		// transport's ResponseHeaderTimeout bounds the header wait and the
+		// body is streamed for as long as the upstream keeps sending. For
+		// non-streaming, the 35s deadline guards the whole exchange.
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if reqPayload.Stream {
+			ctx = r.Context()
+			cancel = func() {}
+		} else {
+			ctx, cancel = context.WithTimeout(r.Context(), 35*time.Second)
+		}
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1067,9 +1109,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Del("X-Real-IP")
 		upstreamReq.Header.Del("CF-Connecting-IP")
 
-		client := newTorClient()
 		torSem <- struct{}{}
-		resp, errDo = client.Do(upstreamReq)
+		resp, errDo = reqClient.Do(upstreamReq)
 		<-torSem
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
