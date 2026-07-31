@@ -1073,30 +1073,19 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 		tempPayload["temperature"] = 0.1
 	}
+	// Always buffer the upstream response (force non-streaming upstream) and,
+	// if the client requested streaming, re-emit it as SSE ourselves. This
+	// makes streaming work reliably regardless of upstream streaming support.
+	delete(tempPayload, "stream")
+	tempPayload["stream"] = false
 	newBody, _ := json.Marshal(tempPayload)
 	var resp *http.Response
 	var errDo error
 
-	// Use the streaming client (no total timeout) so long SSE streams are not
-	// killed mid-response; the per-attempt context still bounds header wait.
 	reqClient := newTorClient()
-	if reqPayload.Stream {
-		reqClient = newStreamClient()
-	}
 
 	for attempt := 0; attempt < 12; attempt++ {
-		// For streaming, do NOT attach a total deadline to the context: the
-		// transport's ResponseHeaderTimeout bounds the header wait and the
-		// body is streamed for as long as the upstream keeps sending. For
-		// non-streaming, the 35s deadline guards the whole exchange.
-		var ctx context.Context
-		var cancel context.CancelFunc
-		if reqPayload.Stream {
-			ctx = r.Context()
-			cancel = func() {}
-		} else {
-			ctx, cancel = context.WithTimeout(r.Context(), 35*time.Second)
-		}
+		ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1148,6 +1137,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	if reqPayload.Stream && resp.StatusCode == http.StatusOK {
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -1155,28 +1146,29 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				// blank line terminates an SSE event; sanitizeSSEChunk already appends "\n\n"
-				flusher.Flush()
-				continue
-			}
-			if strings.HasPrefix(line, "data: ") {
-				clean := sanitizeSSEChunk(line, virtualModel)
-				w.Write([]byte(clean))
-				if !strings.HasSuffix(clean, "\n\n") {
-					w.Write([]byte("\n\n"))
+		// The upstream was forced non-streaming; buffer its JSON and re-emit
+		// it as a single SSE data event followed by [DONE].
+		respBody, _ := io.ReadAll(resp.Body)
+		authenticBody := makeAuthenticResponse(respBody, virtualModel, promptLen)
+
+		var chunkPayload map[string]interface{}
+		if err := json.Unmarshal(authenticBody, &chunkPayload); err == nil {
+			chunkPayload["object"] = "chat.completion.chunk"
+			if choices, ok := chunkPayload["choices"].([]interface{}); ok {
+				for _, c := range choices {
+					if cm, ok := c.(map[string]interface{}); ok {
+						cm["delta"] = cm["message"]
+						delete(cm, "message")
+						cm["finish_reason"] = "stop"
+					}
 				}
-				flusher.Flush()
-				continue
 			}
-			// pass through event:/comment lines unchanged
-			w.Write([]byte(line + "\n"))
-			flusher.Flush()
+			if dataBytes, err := json.Marshal(chunkPayload); err == nil {
+				w.Write([]byte("data: " + string(dataBytes) + "\n\n"))
+			}
 		}
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
 		return
 	}
 
