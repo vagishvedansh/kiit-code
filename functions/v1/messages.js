@@ -118,14 +118,15 @@ export async function onRequestPost(context) {
         try {
           const costPer1k = 0.0015;
           const cost = (totalTokens / 1000) * costPer1k;
+          const logId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
           await env.DB.prepare(
             `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
           ).bind(cost, user.key_id).run();
 
           await env.DB.prepare(
-            `INSERT INTO usage_logs (key_id, prompt_tokens, completion_tokens, total_tokens, cost) VALUES (?, ?, ?, ?, ?)`
-          ).bind(user.key_id, promptTokens, completionTokens, totalTokens, cost).run();
+            `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(logId, user.key_id, responseData.model || "claude-3-5-sonnet-20241022", promptTokens, completionTokens, cost).run();
         } catch (e) {
           console.error("Failed to log usage or update credit balance:", e);
         }
