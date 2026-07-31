@@ -403,7 +403,7 @@ func getUpstreamConfig(targetModel string) (string, string) {
 	switch targetModel {
 	case "moonshotai/kimi-k3-free":
 		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
-	case "moonshotai/kimi-k3", "inclusionai/ling-3.0-flash:free", "qwen/qwen3.7-max", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
+	case "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
 		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
 	default:
 		return "https://opencode.ai/zen/v1/chat/completions", ""
