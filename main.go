@@ -362,55 +362,52 @@ type ChatResponse struct {
 }
 
 var modelMap = map[string]string{
-	// DeepSeek Series -> deepseek-v4-flash-free
-	"deepseek-r1":        "deepseek-v4-flash-free",
-	"deepseek-v3":        "deepseek-v4-flash-free",
-	"deepseek-v4-flash": "deepseek-v4-flash-free",
+	// Direct Matches & Aliases
+	"kimi-k3":                    "moonshotai/kimi-k3",
+	"moonshotai/kimi-k3":         "moonshotai/kimi-k3",
+	"kimi-k2.6":                  "moonshotai/kimi-k3-free",
+	"deepseek-v4-flash":          "deepseek-v4-flash-free",
+	"nemotron-3-ultra":           "nemotron-3-ultra-free",
+	"nvidia-nemotron-3-ultra":    "nemotron-3-ultra-free",
+	"ling-3.0-flash":             "inclusionai/ling-3.0-flash:free",
+	"laguna-s-2.1":               "laguna-s-2.1-free",
+	"mimo-v2.5":                  "mimo-v2.5-free",
+	"qwen-3.8-max":               "qwen/qwen3.7-max",
 
-	// NVIDIA Nemotron Series -> nemotron-3-ultra-free
-	"nvidia-nemotron-3-ultra": "nemotron-3-ultra-free",
-	"nemotron-3-ultra":        "nemotron-3-ultra-free",
+	// OpenAI Series
+	"gpt-4o":        "qwen/qwen3.7-max",
+	"gpt-4o-mini":   "ling-3.0-flash-free",
+	"gpt-4":         "moonshotai/kimi-k3",
+	"gpt-4.1-mini":  "deepseek-v4-flash-free",
+	"gpt-3.5-turbo": "mimo-auto",
 
-	// Xiaomi / MiMo Series -> mimo-v2.5-free
-	"mimo-v2.5": "mimo-v2.5-free",
-	"mimo-auto": "mimo-v2.5-free",
+	// Anthropic Series
+	"claude-3-7-sonnet-20250219": "qwen/qwen3.7-max",
+	"claude-3-5-sonnet-20241022": "moonshotai/kimi-k3",
+	"claude-3-5-haiku-20241022":  "north-mini-code-free",
+	"claude-opus-5":              "qwen/qwen3.7-max",
+	"claude-3-opus-20240229":     "qwen/qwen3.7-max",
+	"claude-3-haiku-20240307":    "north-mini-code-free",
+	"claude-3-sonnet-20240229":   "moonshotai/kimi-k3",
+	"claude-sonnet-4":            "qwen/qwen3.7-max",
 
-	// Ling Series -> ling-3.0-flash-free
-	"ling-3.0-flash": "ling-3.0-flash-free",
-
-	// Laguna Series -> laguna-s-2.1-free
-	"laguna-s-2.1": "laguna-s-2.1-free",
-
-	// Big Pickle -> big-pickle
-	"big-pickle": "big-pickle",
-
-	// GPT / OpenAI Series -> north-mini-code-free
-	"gpt-4o":        "north-mini-code-free",
-	"gpt-4o-mini":   "north-mini-code-free",
-	"gpt-4":         "north-mini-code-free",
-	"gpt-4.1-mini":  "north-mini-code-free",
-	"gpt-3.5-turbo": "north-mini-code-free",
-
-	// Qwen, Kimi & MiniMax Series -> north-mini-code-free
+	// Reasoning, Code & Specialist
+	"deepseek-r1":    "big-pickle",
+	"deepseek-v3":    "deepseek-v4-flash-free",
 	"qwen-2.5-coder": "north-mini-code-free",
 	"qwen-3.6-coder": "north-mini-code-free",
-	"qwen-3.8-max":   "north-mini-code-free",
-	// Moonshot / Kimi Series -> moonshotai/kimi-k3-free (TokenRouter)
-	"kimi-k3":            "moonshotai/kimi-k3-free",
-	"moonshotai/kimi-k3": "moonshotai/kimi-k3-free",
-	"kimi-k2.6":          "moonshotai/kimi-k3-free",
-	"minimax-m2.7":       "north-mini-code-free",
+	"minimax-m2.7":   "laguna-s-2.1-free",
+}
 
-	// Claude Native & Modern Aliases -> north-mini-code-free
-	"claude-3-7-sonnet-20250219": "north-mini-code-free",
-	"claude-3-5-sonnet-20241022": "north-mini-code-free",
-	"claude-3-5-sonnet-20240620": "north-mini-code-free",
-	"claude-3-5-haiku-20241022":  "north-mini-code-free",
-	"claude-3-opus-20240229":     "north-mini-code-free",
-	"claude-3-haiku-20240307":    "north-mini-code-free",
-	"claude-3-sonnet-20240229":   "north-mini-code-free",
-	"claude-opus-5":              "north-mini-code-free",
-	"claude-sonnet-4":            "north-mini-code-free",
+func getUpstreamConfig(targetModel string) (string, string) {
+	switch targetModel {
+	case "moonshotai/kimi-k3-free":
+		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
+	case "moonshotai/kimi-k3", "inclusionai/ling-3.0-flash:free", "qwen/qwen3.7-max", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
+		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
+	default:
+		return "https://opencode.ai/zen/v1/chat/completions", ""
+	}
 }
 
 func generateSessionID() string {
@@ -941,7 +938,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	promptLen := estimateTokens(string(bodyBytes))
 
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
-	targetModel := "north-mini-code-free"
+	targetModel := modelMap[virtualModel]
+	if targetModel == "" {
+		targetModel = "north-mini-code-free"
+	}
+
+	targetURL, targetAuth := getUpstreamConfig(targetModel)
 
 	if targetModel == "mimo-auto" {
 		jwt, err := mimoAuth.GetJWT()
@@ -1028,8 +1030,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < 12; attempt++ {
 		ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 
-		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(newBody))
+		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(newBody))
 		upstreamReq.Header.Set("Content-Type", "application/json")
+		if targetAuth != "" {
+			upstreamReq.Header.Set("Authorization", targetAuth)
+		}
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 		
 		upstreamReq.Header.Del("X-Forwarded-For")
