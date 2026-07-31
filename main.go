@@ -888,7 +888,8 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if internalSecret != "" {
 		reqSecret := r.Header.Get("X-Internal-Secret")
 		authHeader := r.Header.Get("Authorization")
-		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") {
+		apiKeyHeader := r.Header.Get("x-api-key")
+		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") && apiKeyHeader == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			w.Write([]byte(`{"detail":"Unauthorized request source"}`))
