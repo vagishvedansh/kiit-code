@@ -363,32 +363,38 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// DeepSeek Series
-	"deepseek-r1": "north-mini-code-free",
-	"deepseek-v3": "north-mini-code-free",
+	"deepseek-r1":        "deepseek-r1",
+	"deepseek-v3":        "deepseek-v3",
+	"deepseek-v4-flash": "deepseek-v4-flash",
+
+	// NVIDIA Series
+	"nvidia-nemotron-3-ultra": "nemotron-3-ultra",
+	"nemotron-3-ultra":        "nemotron-3-ultra",
 
 	// GPT / OpenAI Series
-	"gpt-4o":        "north-mini-code-free",
-	"gpt-4o-mini":   "north-mini-code-free",
-	"gpt-4":         "north-mini-code-free",
-	"gpt-4.1-mini":  "north-mini-code-free",
-	"gpt-3.5-turbo": "north-mini-code-free",
+	"gpt-4o":        "gpt-4o",
+	"gpt-4o-mini":   "gpt-4o-mini",
+	"gpt-4":         "gpt-4",
+	"gpt-4.1-mini":  "gpt-4o-mini",
+	"gpt-3.5-turbo": "gpt-3.5-turbo",
 
 	// Qwen, Kimi & MiniMax Series
-	"qwen-2.5-coder": "north-mini-code-free",
-	"qwen-3.6-coder": "north-mini-code-free",
-	"qwen-3.8-max":   "north-mini-code-free",
-	"kimi-k2.6":      "north-mini-code-free",
-	"minimax-m2.7":   "north-mini-code-free",
+	"qwen-2.5-coder": "qwen-2.5-coder",
+	"qwen-3.6-coder": "qwen-3.6-coder",
+	"qwen-3.8-max":   "qwen-max",
+	"kimi-k2.6":      "kimi-k2.6",
+	"minimax-m2.7":   "minimax-m2.7",
 
 	// Claude Native & Modern Aliases
-	"claude-3-7-sonnet-20250219": "north-mini-code-free",
-	"claude-3-5-sonnet-20241022": "north-mini-code-free",
-	"claude-3-5-sonnet-20240620": "north-mini-code-free",
-	"claude-3-5-haiku-20241022":  "north-mini-code-free",
-	"claude-3-opus-20240229":     "north-mini-code-free",
-	"claude-3-haiku-20240307":    "north-mini-code-free",
-	"claude-3-sonnet-20240229":   "north-mini-code-free",
-	"claude-sonnet-4":            "north-mini-code-free",
+	"claude-3-7-sonnet-20250219": "claude-3-5-sonnet",
+	"claude-3-5-sonnet-20241022": "claude-3-5-sonnet",
+	"claude-3-5-sonnet-20240620": "claude-3-5-sonnet",
+	"claude-3-5-haiku-20241022":  "claude-3-5-haiku",
+	"claude-3-opus-20240229":     "claude-3-opus",
+	"claude-3-haiku-20240307":    "claude-3-haiku",
+	"claude-3-sonnet-20240229":   "claude-3-5-sonnet",
+	"claude-opus-5":              "claude-3-opus",
+	"claude-sonnet-4":            "claude-3-5-sonnet",
 }
 
 func generateSessionID() string {
@@ -918,7 +924,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	promptLen := estimateTokens(string(bodyBytes))
 
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
-	targetModel := "north-mini-code-free"
+	targetModel := modelMap[virtualModel]
+	if targetModel == "" {
+		targetModel = "north-mini-code-free"
+	}
 
 	if targetModel == "mimo-auto" {
 		jwt, err := mimoAuth.GetJWT()
