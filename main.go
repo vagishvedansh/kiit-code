@@ -375,37 +375,37 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// Direct Matches & Aliases
-	"kimi-k3":                 "north-mini-code-free",
-	"moonshotai/kimi-k3":      "north-mini-code-free",
-	"kimi-k2.6":               "ling-3.0-flash-free",
-	"deepseek-v4-flash":       "north-mini-code-free",
-	"nemotron-3-ultra":        "north-mini-code-free",
-	"nvidia-nemotron-3-ultra": "north-mini-code-free",
+	"kimi-k3":                 "moonshotai/kimi-k3",
+	"moonshotai/kimi-k3":      "moonshotai/kimi-k3",
+	"kimi-k2.6":               "moonshotai/kimi-k3-free",
+	"deepseek-v4-flash":       "deepseek-v4-flash-free",
+	"nemotron-3-ultra":        "nemotron-3-ultra-free",
+	"nvidia-nemotron-3-ultra": "nemotron-3-ultra-free",
 	"ling-3.0-flash":          "inclusionai/ling-3.0-flash:free",
 	"laguna-s-2.1":            "laguna-s-2.1-free",
-	"mimo-v2.5":               "north-mini-code-free",
+	"mimo-v2.5":               "mimo-v2.5-free",
 	"qwen-3.8-max":            "north-mini-code-free",
 
 	// OpenAI Series
 	"gpt-4o":        "north-mini-code-free",
 	"gpt-4o-mini":   "ling-3.0-flash-free",
-	"gpt-4":         "north-mini-code-free",
-	"gpt-4.1-mini":  "north-mini-code-free",
-	"gpt-3.5-turbo": "ling-3.0-flash-free",
+	"gpt-4":         "moonshotai/kimi-k3-free",
+	"gpt-4.1-mini":  "deepseek-v4-flash-free",
+	"gpt-3.5-turbo": "mimo-auto",
 
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "north-mini-code-free",
-	"claude-3-5-sonnet-20241022": "north-mini-code-free",
+	"claude-3-5-sonnet-20241022": "moonshotai/kimi-k3-free",
 	"claude-3-5-haiku-20241022":  "north-mini-code-free",
 	"claude-opus-5":              "north-mini-code-free",
 	"claude-3-opus-20240229":     "north-mini-code-free",
 	"claude-3-haiku-20240307":    "north-mini-code-free",
-	"claude-3-sonnet-20240229":   "north-mini-code-free",
+	"claude-3-sonnet-20240229":   "moonshotai/kimi-k3-free",
 	"claude-sonnet-4":            "north-mini-code-free",
 
 	// Reasoning, Code & Specialist
-	"deepseek-r1":    "north-mini-code-free",
-	"deepseek-v3":    "north-mini-code-free",
+	"deepseek-r1":    "big-pickle",
+	"deepseek-v3":    "deepseek-v4-flash-free",
 	"qwen-2.5-coder": "north-mini-code-free",
 	"qwen-3.6-coder": "north-mini-code-free",
 	"minimax-m2.7":   "laguna-s-2.1-free",
