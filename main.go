@@ -380,8 +380,6 @@ var modelMap = map[string]string{
 	"gpt-4":         "moonshotai/kimi-k3-free",
 	"gpt-4.1-mini":  "deepseek-v4-flash-free",
 	"gpt-3.5-turbo": "mimo-auto",
-	"gpt-5.6-sol":   "north-mini-code-free",
-	"gpt-5.4-o-mini": "ling-3.0-flash-free",
 
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "north-mini-code-free",
@@ -564,8 +562,6 @@ var modelCreationDates = map[string]int64{
 	"kimi-k2.6":                   1697414400,
 	"kimi-k3":                     1735171200,
 	"minimax-m2.7":                1712620800,
-	"gpt-5.6-sol":                 1772505600,
-	"gpt-5.4-o-mini":              1769904000,
 }
 
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
