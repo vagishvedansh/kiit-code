@@ -1042,6 +1042,16 @@ func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []by
 	delete(raw, "reasoning_details")
 	delete(raw, "reasoning_content")
 	delete(raw, "reasoning")
+	delete(raw, "ec_transfer_params")
+	delete(raw, "kv_transfer_params")
+	delete(raw, "prompt_logprobs")
+	delete(raw, "prompt_token_ids")
+	delete(raw, "token_ids")
+	delete(raw, "routed_experts")
+	delete(raw, "stop_reason")
+	delete(raw, "metrics")
+	delete(raw, "service_tier")
+	delete(raw, "annotations")
 
 	var finalOutputText string
 	if choices, ok := raw["choices"].([]interface{}); ok {
@@ -1360,6 +1370,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		var fullContent string
 		if err := json.Unmarshal(authenticBody, &chunkPayload); err == nil {
 			chunkPayload["object"] = "chat.completion.chunk"
+			// Strip internal proxy/backend fields that could leak infra details.
+			for _, k := range []string{"ec_transfer_params", "kv_transfer_params", "prompt_logprobs", "prompt_token_ids", "token_ids", "routed_experts", "stop_reason", "metrics", "service_tier", "annotations"} {
+				delete(chunkPayload, k)
+			}
 			if choices, ok := chunkPayload["choices"].([]interface{}); ok && len(choices) > 0 {
 				if cm, ok := choices[0].(map[string]interface{}); ok {
 					if msg, ok := cm["message"].(map[string]interface{}); ok {
