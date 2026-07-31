@@ -970,10 +970,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	requestedModel := "claude-opus-5"
 
 	headerModel := r.Header.Get("X-Model-Name")
-	if headerModel != "" {
+	// Always unmarshal the payload so fields like Stream are populated even
+	// when the model name arrives via the X-Model-Name header.
+	if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil {
+		if headerModel == "" && reqPayload.Model != "" {
+			requestedModel = reqPayload.Model
+		} else if headerModel != "" {
+			requestedModel = headerModel
+		}
+	} else if headerModel != "" {
 		requestedModel = headerModel
-	} else if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil && reqPayload.Model != "" {
-		requestedModel = reqPayload.Model
 	}
 
 	virtualModel := normalizeModel(requestedModel)
