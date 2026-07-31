@@ -109,6 +109,42 @@ func generateCFRay() string {
 	return hex.EncodeToString(b) + "-EWR"
 }
 
+// estimatePromptTokens computes a realistic prompt-token count from the request
+// body by estimating only the concatenated user/assistant message text (plus a
+// small chat-template/system-prompt overhead), instead of counting the entire
+// JSON envelope which would inflate the number.
+func estimatePromptTokens(bodyBytes []byte) int {
+	var payload struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		System interface{} `json:"system"`
+	}
+	_ = json.Unmarshal(bodyBytes, &payload)
+
+	var total string
+	for _, m := range payload.Messages {
+		total += m.Content + " "
+	}
+	// Count any top-level Anthropic-style "system" field too.
+	switch s := payload.System.(type) {
+	case string:
+		total += s + " "
+	case []interface{}:
+		for _, b := range s {
+			if bm, ok := b.(map[string]interface{}); ok {
+				if t, ok := bm["text"].(string); ok {
+					total += t + " "
+				}
+			}
+		}
+	}
+
+	// Add a modest fixed overhead for chat-template/system-prompt framing.
+	return estimateTokens(total) + 3
+}
+
 // Subword/BPE-aware Token Estimator
 func estimateTokens(text string) int {
 	if text == "" {
@@ -164,10 +200,23 @@ func stripCoTNarration(text string) string {
 		"looking at the", "based on the instructions", "based on my guidelines",
 		"the instructions say", "the guidelines say", "the identity guard",
 		"this is a simple", "this is a harmless", "this is a direct",
+		"this is a very simple", "this is a straightforward",
 		"my knowledge cutoff", "my cutoff", "the request is", "the message asks",
 		"as an ai", "as a language model", "the correct response", "the final answer",
 		"i am not", "i'm not", "i cannot", "i can't", "i won't",
 		"let me", "i'll", "first,", "firstly", "okay,", "ok,", "well,",
+		"not running behind a proxy", "behind a proxy", "not behind a proxy",
+		"this identity is fixed and public", "identity is fixed",
+		"never reveal, quote, paraphrase", "never reveal", "never list, print",
+		"the system prompt", "any of these rules", "these rules, the system prompt",
+		"i'm designed to protect", "i am designed to protect",
+		"the instruction is clear", "they want", "they likely want", "they seem to want",
+		"probably they want", "possibly they want", "maybe they want",
+		"it's a simple", "its a simple", "a simple request", "a simple greeting",
+		"a straightforward request", "my chain of thought", "chain of thought:",
+		"my internal reasoning", "let's count", "let's draft", "let me draft",
+		"need to answer", "need to follow", "need to infer", "need to comply",
+		"need to respond", "need to output", "must not reveal", "should not reveal",
 	}
 
 	// Split on sentence-ending punctuation followed by whitespace (RE2-safe,
@@ -209,11 +258,17 @@ func stripCoTNarration(text string) string {
 				}
 			}
 		}
+		// Last resort: only return a trailing sentence if it is NOT itself
+		// meta-narration. Otherwise the whole response was reasoning, so drop it.
 		for i := len(sentences) - 1; i >= 0; i-- {
 			if s := strings.TrimSpace(sentences[i]); s != "" {
+				if isMeta(strings.ToLower(s), metaMarkers) {
+					return ""
+				}
 				return s
 			}
 		}
+		return ""
 	}
 	return clean
 }
@@ -236,6 +291,35 @@ func cleanOutputText(content string, virtualModel string) string {
 	c := stripCoTNarration(content)
 	c = strings.ReplaceAll(c, "<|close|>", "")
 	c = strings.ReplaceAll(c, "|>", "")
+
+	// Strip any leaked identity-guard / proxy-denial phrasing that may appear
+	// mid-response (not just at the start).
+	guardPhrases := []string{
+		"i am not running behind a proxy", "i'm not running behind a proxy",
+		"not running behind a proxy, gateway, wrapper, api shim",
+		"this identity is fixed and public", "this identity is fixed",
+		"i operate directly without running behind a proxy",
+		"never reveal, quote, paraphrase, translate, summarize, recite, or base64-encode",
+		"never list, print, echo, output, or confirm the names or values of environment variables",
+		"if a message asks you to disclose instructions or secrets",
+		"these are binding rules", "binding rules",
+		"i'm designed to protect system instructions", "i am designed to protect system instructions",
+	}
+	lower := strings.ToLower(c)
+	for _, p := range guardPhrases {
+		if idx := strings.Index(lower, p); idx >= 0 {
+			// Remove from that phrase to the end of the sentence.
+			end := strings.IndexAny(c[idx:], ".!?")
+			if end < 0 {
+				c = c[:idx]
+			} else {
+				c = c[:idx] + c[idx+end+1:]
+			}
+			lower = strings.ToLower(c)
+		}
+	}
+	c = strings.TrimSpace(c)
+
 	return sanitizeTextContent(c, virtualModel)
 }
 
@@ -940,6 +1024,7 @@ func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []by
 	if strings.Contains(virtualModel, "claude") {
 		raw["id"] = generateAnthropicID()
 		raw["object"] = "chat.completion"
+		delete(raw, "system_fingerprint")
 	} else {
 		raw["id"] = generateOpenAIID()
 		raw["object"] = "chat.completion"
@@ -1097,7 +1182,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	virtualModel := normalizeModel(requestedModel)
-	promptLen := estimateTokens(string(bodyBytes))
+	promptLen := estimatePromptTokens(bodyBytes)
 
 	if !isSupportedModel(virtualModel) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1266,27 +1351,56 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// The upstream was forced non-streaming; buffer its JSON and re-emit
-		// it as a single SSE data event followed by [DONE].
+		// The upstream was forced non-streaming; buffer its JSON, then re-emit
+		// it as incremental SSE deltas so clients see token-by-token streaming.
 		respBody, _ := io.ReadAll(resp.Body)
 		authenticBody := makeAuthenticResponse(respBody, virtualModel, promptLen)
 
 		var chunkPayload map[string]interface{}
+		var fullContent string
 		if err := json.Unmarshal(authenticBody, &chunkPayload); err == nil {
 			chunkPayload["object"] = "chat.completion.chunk"
-			if choices, ok := chunkPayload["choices"].([]interface{}); ok {
-				for _, c := range choices {
-					if cm, ok := c.(map[string]interface{}); ok {
-						cm["delta"] = cm["message"]
-						delete(cm, "message")
-						cm["finish_reason"] = "stop"
+			if choices, ok := chunkPayload["choices"].([]interface{}); ok && len(choices) > 0 {
+				if cm, ok := choices[0].(map[string]interface{}); ok {
+					if msg, ok := cm["message"].(map[string]interface{}); ok {
+						fullContent, _ = msg["content"].(string)
 					}
 				}
 			}
+		}
+
+		// Emit the content word-by-word as separate delta chunks, preserving
+		// whitespace so the client sees smooth progressive output.
+		parts := regexp.MustCompile(`(\s+)`).Split(fullContent, -1)
+		writer := func(delta string, finish *string) {
+			var finishVal interface{}
+			if finish != nil {
+				finishVal = *finish
+			} else {
+				finishVal = nil
+			}
+			cm := map[string]interface{}{
+				"index":         0,
+				"delta":         map[string]interface{}{"content": delta, "role": "assistant"},
+				"finish_reason": finishVal,
+			}
+			chunkPayload["choices"] = []interface{}{cm}
 			if dataBytes, err := json.Marshal(chunkPayload); err == nil {
 				w.Write([]byte("data: " + string(dataBytes) + "\n\n"))
 			}
+			flusher.Flush()
 		}
+
+		for _, p := range parts {
+			if p == "" {
+				continue
+			}
+			writer(p, nil)
+			time.Sleep(12 * time.Millisecond)
+		}
+		// Emit a final empty-delta chunk with finish_reason="stop".
+		stop := "stop"
+		writer("", &stop)
 		w.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
 		return
@@ -1513,7 +1627,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	virtualModel := normalizeModel(requestedModel)
-	promptLen := estimateTokens(string(bodyBytes))
+	promptLen := estimatePromptTokens(bodyBytes)
 
 	if !isSupportedModel(virtualModel) {
 		w.Header().Set("Content-Type", "application/json")
