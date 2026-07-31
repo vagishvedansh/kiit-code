@@ -924,10 +924,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	promptLen := estimateTokens(string(bodyBytes))
 
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
-	targetModel := modelMap[virtualModel]
-	if targetModel == "" {
-		targetModel = "north-mini-code-free"
-	}
+	targetModel := "north-mini-code-free"
 
 	if targetModel == "mimo-auto" {
 		jwt, err := mimoAuth.GetJWT()
