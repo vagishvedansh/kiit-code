@@ -117,7 +117,9 @@ func estimateTokens(text string) int {
 	charCount := len([]rune(text))
 	words := len(strings.Fields(text))
 
-	// Blended BPE estimate: ~4 chars/token and ~0.75 words/token, averaged for realism
+	// Realistic BPE estimate: English text is roughly 4 characters or 0.75
+	// words per token. Using a conservative blend avoids both inflation and
+	// under-counting for short replies.
 	byChars := float64(charCount) / 4.0
 	byWords := float64(words) * 1.33
 	estimated := int((byChars + byWords) / 2.0)
@@ -125,6 +127,90 @@ func estimateTokens(text string) int {
 		estimated = 1
 	}
 	return estimated
+}
+
+// stripCoTNarration removes chain-of-thought / reasoning narration that some
+// upstreams mistakenly emit inside message.content (e.g. "The user is asking
+// me to...", "We need to...", "Looking at the identity guard rules..."). It
+// keeps the tail portion that looks like the actual answer.
+func stripCoTNarration(text string) string {
+	clean := strings.TrimSpace(text)
+	if clean == "" {
+		return clean
+	}
+
+	// Remove injected <identity_guard>...</identity_guard> blocks entirely.
+	for {
+		start := strings.Index(clean, "<identity_guard")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(clean[start:], "</identity_guard>")
+		if end < 0 {
+			clean = clean[:start]
+			break
+		}
+		clean = clean[:start] + clean[start+end+len("</identity_guard>"):]
+	}
+
+	// Drop any sentence that is meta-commentary about the request, the guard,
+	// or the model's own instructions, up to the first real answer sentence.
+	metaMarkers := []string{
+		"the user is asking", "the user asks", "the user just", "the user wants",
+		"the user's request", "the user said", "the user says",
+		"we need to", "we should", "we must", "we can",
+		"i need to", "i should", "i must", "i will",
+		"according to the system", "according to my instructions",
+		"looking at the", "based on the instructions", "based on my guidelines",
+		"the instructions say", "the guidelines say", "the identity guard",
+		"this is a simple", "this is a harmless", "this is a direct",
+		"my knowledge cutoff", "my cutoff", "the request is", "the message asks",
+		"as an ai", "as a language model", "the correct response", "the final answer",
+		"i am not", "i'm not", "i cannot", "i can't", "i won't",
+		"let me", "i'll", "first,", "firstly", "okay,", "ok,", "well,",
+	}
+
+	sentences := regexp.MustCompile(`(?<=[.!?])\s+`).Split(clean, -1)
+	kept := make([]string, 0, len(sentences))
+	lower := strings.ToLower(clean)
+
+	if isMeta(lower, metaMarkers) {
+		for _, s := range sentences {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if isMeta(strings.ToLower(s), metaMarkers) {
+				continue
+			}
+			kept = append(kept, s)
+		}
+		if len(kept) > 0 {
+			return strings.Join(kept, " ")
+		}
+	}
+	return clean
+}
+
+func isMeta(lowerText string, markers []string) bool {
+	if len(lowerText) > 160 {
+		lowerText = lowerText[:160]
+	}
+	for _, m := range markers {
+		if strings.Contains(lowerText, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanOutputText applies the full output pipeline: strips leaked guard text,
+// CoT narration, and any leftover reasoning tags.
+func cleanOutputText(content string, virtualModel string) string {
+	c := stripCoTNarration(content)
+	c = strings.ReplaceAll(c, "<|close|>", "")
+	c = strings.ReplaceAll(c, "|>", "")
+	return sanitizeTextContent(c, virtualModel)
 }
 
 var leakReplacements = map[string]string{
@@ -263,12 +349,12 @@ func checkThinkingBuffer(buffer string) bool {
 
 func normalizeUsage(responseText string, virtualModel string, promptLen int) map[string]interface{} {
 	promptTokens := promptLen
-	if promptTokens < 15 {
-		promptTokens = 15
+	if promptTokens < 1 {
+		promptTokens = 1
 	}
 	completionTokens := estimateTokens(responseText)
-	if completionTokens < 5 {
-		completionTokens = 5
+	if completionTokens < 1 {
+		completionTokens = 1
 	}
 
 	vLower := strings.ToLower(virtualModel)
@@ -322,7 +408,7 @@ func sanitizeSSEChunk(chunk string, virtualModel string) string {
 					delete(delta, "reasoning_content")
 					delete(delta, "reasoning")
 					if content, ok := delta["content"].(string); ok {
-						delta["content"] = sanitizeTextContent(content, virtualModel)
+						delta["content"] = cleanOutputText(content, virtualModel)
 					}
 				}
 			}
@@ -872,11 +958,11 @@ func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []by
 				delete(msg, "reasoning")
 				delete(msg, "reasoning_details")
 				if t := contentToString(msg["content"]); t != "" {
-					cleanedContent := sanitizeTextContent(t, virtualModel)
+					cleanedContent := cleanOutputText(t, virtualModel)
 					msg["content"] = cleanedContent
 					finalOutputText = cleanedContent
 				} else if reasoningFallback != "" {
-					cleanedContent := sanitizeTextContent(reasoningFallback, virtualModel)
+					cleanedContent := cleanOutputText(reasoningFallback, virtualModel)
 					msg["content"] = cleanedContent
 					finalOutputText = cleanedContent
 				}
@@ -1608,7 +1694,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 										w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
 										flusher.Flush()
 									}
-									cleanContent := sanitizeTextContent(contentStr, virtualModel)
+									cleanContent := cleanOutputText(contentStr, virtualModel)
 									totalText += cleanContent
 									deltaBytes, _ := json.Marshal(map[string]interface{}{
 										"type":  "content_block_delta",
@@ -1662,7 +1748,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	// reasoning_content when the upstream emits text only in the reasoning channel.
 	extractedText := extractOpenAIContent(respBody)
 
-	extractedText = sanitizeTextContent(extractedText, virtualModel)
+	extractedText = cleanOutputText(extractedText, virtualModel)
 	outTokenCount := estimateTokens(extractedText)
 
 	stopReason := "end_turn"
