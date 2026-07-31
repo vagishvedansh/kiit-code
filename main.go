@@ -1234,6 +1234,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		"stream":      payload.Stream,
 	}
 
+	targetURL, targetAuth := getUpstreamConfig(targetModel)
 	openAIPayloadBytes, _ := json.Marshal(openAIReq)
 	var resp *http.Response
 	var errDo error
@@ -1247,8 +1248,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < 12; attempt++ {
 		ctx, cancel := context.WithTimeout(r.Context(), reqTimeout)
 
-		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, opencodeURL, bytes.NewBuffer(openAIPayloadBytes))
+		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(openAIPayloadBytes))
 		upstreamReq.Header.Set("Content-Type", "application/json")
+		if targetAuth != "" {
+			upstreamReq.Header.Set("Authorization", targetAuth)
+		}
 		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 		
 		upstreamReq.Header.Del("X-Forwarded-For")
