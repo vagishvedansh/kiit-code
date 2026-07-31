@@ -170,7 +170,9 @@ func stripCoTNarration(text string) string {
 		"let me", "i'll", "first,", "firstly", "okay,", "ok,", "well,",
 	}
 
-	sentences := regexp.MustCompile(`(?<=[.!?])\s+`).Split(clean, -1)
+	// Split on sentence-ending punctuation followed by whitespace (RE2-safe,
+	// no lookbehind which Go's regexp does not support).
+	sentences := regexp.MustCompile(`[.!?]\s+`).Split(clean, -1)
 	kept := make([]string, 0, len(sentences))
 	lower := strings.ToLower(clean)
 
@@ -187,6 +189,30 @@ func stripCoTNarration(text string) string {
 		}
 		if len(kept) > 0 {
 			return strings.Join(kept, " ")
+		}
+		// Everything looked like meta-commentary; if there's a colon, keep the
+		// text after the last colon (e.g. "Looking at the guard: I am Claude").
+		if idx := strings.LastIndex(clean, ":"); idx >= 0 {
+			tail := strings.TrimSpace(clean[idx+1:])
+			if tail != "" && !isMeta(strings.ToLower(tail), metaMarkers) {
+				return tail
+			}
+		}
+		// Fall back to extracting the content after common answer-introducing
+		// patterns, else the last sentence.
+		for _, pat := range []string{"answer is:", "answer:", "so i should say:", "should say:", "so the answer", "the answer is", "so i'll say:", "i'll say:", "output:", "return:"} {
+			if idx := strings.Index(strings.ToLower(clean), pat); idx >= 0 {
+				tail := strings.TrimSpace(clean[idx+len(pat):])
+				tail = strings.Trim(tail, " .\t\n\"'")
+				if tail != "" {
+					return tail
+				}
+			}
+		}
+		for i := len(sentences) - 1; i >= 0; i-- {
+			if s := strings.TrimSpace(sentences[i]); s != "" {
+				return s
+			}
 		}
 	}
 	return clean
