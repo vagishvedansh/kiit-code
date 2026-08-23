@@ -571,41 +571,43 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// Direct Matches & Aliases
+	"ox-alpha":                "x-preview-f-free",
+	"muse-spark":              "muse-spark-1.2-contributor-free",
 	"kimi-k3":                 "moonshotai/kimi-k3",
 	"moonshotai/kimi-k3":      "moonshotai/kimi-k3",
 	"kimi-k2.6":               "moonshotai/kimi-k3-free",
-	"deepseek-v4-flash":       "deepseek-v4-flash-free",
+	"deepseek-v4-flash":       "muse-spark-1.2-contributor-free",
 	"nemotron-3-ultra":        "nemotron-3-ultra-free",
 	"nvidia-nemotron-3-ultra": "nemotron-3-ultra-free",
 	"ling-3.0-flash":          "inclusionai/ling-3.0-flash:free",
 	"laguna-s-2.1":            "laguna-s-2.1-free",
 	"mimo-v2.5":               "mimo-v2.5-free",
-	"qwen-3.8-max":            "north-mini-code-free",
+	"qwen-3.8-max":            "x-preview-f-free",
 
 	// OpenAI Series
-	"gpt-4o":        "north-mini-code-free",
+	"gpt-4o":        "x-preview-f-free",
 	"gpt-4o-mini":   "ling-3.0-flash-free",
 	"gpt-4":         "moonshotai/kimi-k3-free",
-	"gpt-4.1-mini":  "deepseek-v4-flash-free",
+	"gpt-4.1-mini":  "muse-spark-1.2-contributor-free",
 	"gpt-3.5-turbo": "mimo-auto",
 
 	// Anthropic Series
-	"claude-3-7-sonnet-20250219": "north-mini-code-free",
+	"claude-3-7-sonnet-20250219": "x-preview-f-free",
 	"claude-3-5-sonnet-20241022": "moonshotai/kimi-k3-free",
-	"claude-3-5-haiku-20241022":  "north-mini-code-free",
-	"claude-opus-5":              "north-mini-code-free",
-	"claude-3-opus-20240229":     "north-mini-code-free",
-	"claude-3-haiku-20240307":    "north-mini-code-free",
+	"claude-3-5-haiku-20241022":  "x-preview-f-free",
+	"claude-opus-5":              "x-preview-f-free",
+	"claude-3-opus-20240229":     "x-preview-f-free",
+	"claude-3-haiku-20240307":    "x-preview-f-free",
 	"claude-3-sonnet-20240229":   "moonshotai/kimi-k3-free",
-	"claude-sonnet-4":            "north-mini-code-free",
+	"claude-sonnet-4":            "x-preview-f-free",
 
 	// Reasoning, Code & Specialist
 	"deepseek-r1":      "big-pickle",
-	"deepseek-r1-free": "deepseek-v4-flash-free",
-	"deepseek-pro":     "deepseek-v4-flash-free",
-	"deepseek-v3":      "deepseek-v4-flash-free",
-	"qwen-2.5-coder":   "north-mini-code-free",
-	"qwen-3.6-coder":   "north-mini-code-free",
+	"deepseek-r1-free": "muse-spark-1.2-contributor-free",
+	"deepseek-pro":     "muse-spark-1.2-contributor-free",
+	"deepseek-v3":      "muse-spark-1.2-contributor-free",
+	"qwen-2.5-coder":   "x-preview-f-free",
+	"qwen-3.6-coder":   "x-preview-f-free",
 	"minimax-m2.7":     "laguna-s-2.1-free",
 }
 
@@ -1205,7 +1207,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "north-mini-code-free"
+		targetModel = "x-preview-f-free"
 	}
 
 	targetURL, targetAuth := getUpstreamConfig(targetModel)
@@ -1653,7 +1655,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "north-mini-code-free"
+		targetModel = "x-preview-f-free"
 	}
 
 	var openAIMessages []ChatMessage
