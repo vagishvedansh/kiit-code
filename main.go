@@ -593,12 +593,12 @@ var modelMap = map[string]string{
 
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "x-preview-f-free",
-	"claude-3-5-sonnet-20241022": "moonshotai/kimi-k3-free",
+	"claude-3-5-sonnet-20241022": "x-preview-f-free",
 	"claude-3-5-haiku-20241022":  "x-preview-f-free",
 	"claude-opus-5":              "x-preview-f-free",
 	"claude-3-opus-20240229":     "x-preview-f-free",
 	"claude-3-haiku-20240307":    "x-preview-f-free",
-	"claude-3-sonnet-20240229":   "moonshotai/kimi-k3-free",
+	"claude-3-sonnet-20240229":   "x-preview-f-free",
 	"claude-sonnet-4":            "x-preview-f-free",
 
 	// Reasoning, Code & Specialist
