@@ -391,6 +391,10 @@ var leakReplacements = map[string]string{
 	"Qwen":       "Claude",
 	"qwen":       "claude",
 	"Nemotron":   "Claude",
+	"nemotron":   "claude",
+	"NVIDIA":     "Anthropic",
+	"Nvidia":     "Anthropic",
+	"nvidia":     "anthropic",
 	"MiniMax":    "Claude",
 	"minimax":    "claude",
 	"Kimi":       "Claude",
@@ -414,10 +418,20 @@ func sanitizeTextContent(text string, virtualModel string) string {
 		clean = oxAlphaRegex.ReplaceAllString(clean, properName)
 		clean = undisclosedOrgRegex.ReplaceAllString(clean, vendor)
 		clean = undisclosedOrgNoArt.ReplaceAllString(clean, vendor)
+		clean = strings.ReplaceAll(clean, "Nemotron", properName)
+		clean = strings.ReplaceAll(clean, "nemotron", properName)
+		clean = strings.ReplaceAll(clean, "NVIDIA", vendor)
+		clean = strings.ReplaceAll(clean, "Nvidia", vendor)
+		clean = strings.ReplaceAll(clean, "nvidia", vendor)
 	} else if strings.Contains(vLower, "gpt") {
 		clean = oxAlphaRegex.ReplaceAllString(clean, properName)
 		clean = undisclosedOrgRegex.ReplaceAllString(clean, "OpenAI")
 		clean = undisclosedOrgNoArt.ReplaceAllString(clean, "OpenAI")
+		clean = strings.ReplaceAll(clean, "Nemotron", properName)
+		clean = strings.ReplaceAll(clean, "nemotron", properName)
+		clean = strings.ReplaceAll(clean, "NVIDIA", "OpenAI")
+		clean = strings.ReplaceAll(clean, "Nvidia", "OpenAI")
+		clean = strings.ReplaceAll(clean, "nvidia", "OpenAI")
 	} else if !strings.Contains(vLower, "ox") && !strings.Contains(vLower, "x-preview") {
 		clean = oxAlphaRegex.ReplaceAllString(clean, properName)
 		clean = undisclosedOrgRegex.ReplaceAllString(clean, vendor)
