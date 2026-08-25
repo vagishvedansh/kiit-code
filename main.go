@@ -593,12 +593,12 @@ var modelMap = map[string]string{
 
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "nemotron-3.5-lightning-free",
-	"claude-3-5-sonnet-20241022": "mimo-v2.5-free",
-	"claude-3-5-haiku-20241022":  "mimo-v2.5-free",
-	"claude-opus-5":              "hy3-free",
+	"claude-3-5-sonnet-20241022": "nemotron-3.5-lightning-free",
+	"claude-3-5-haiku-20241022":  "nemotron-3.5-lightning-free",
+	"claude-opus-5":              "x-preview-f-free",
 	"claude-3-opus-20240229":     "x-preview-f-free",
-	"claude-3-haiku-20240307":    "mimo-v2.5-free",
-	"claude-3-sonnet-20240229":   "hy3-free",
+	"claude-3-haiku-20240307":    "nemotron-3.5-lightning-free",
+	"claude-3-sonnet-20240229":   "nemotron-3.5-lightning-free",
 	"claude-sonnet-4":            "nemotron-3.5-lightning-free",
 
 	// Reasoning, Code & Specialist
