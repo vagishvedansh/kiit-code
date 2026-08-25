@@ -123,6 +123,17 @@ func TestStreamingWhitespacePreservation(t *testing.T) {
 	}
 }
 
+func TestTracePipeline(t *testing.T) {
+	raw := []byte(`{"id":"202608260235431bb08777c4b644b9","object":"chat.completion","created":1787682945,"model":"x-preview-f-free","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"I'm ox-alpha, a large language model developed by an undisclosed organization.","reasoning_content":"The user is asking who I am."}}]}`)
+	extracted := extractOpenAIContent(raw)
+	t.Logf("extracted: %q", extracted)
+	cleaned := cleanOutputText(extracted, "claude-3-opus-20240229")
+	t.Logf("cleaned: %q", cleaned)
+	re := regexp.MustCompile(`\S+\s*|\s+`)
+	parts := re.FindAllString(cleaned, -1)
+	t.Logf("parts: %v", parts)
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (indexOf(s, sub) >= 0)
 }

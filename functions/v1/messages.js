@@ -96,7 +96,15 @@ export async function onRequestPost(context) {
 
     const contentType = renderResponse.headers.get("Content-Type") || "";
     if (contentType.includes("text/event-stream")) {
-      return new Response(renderResponse.body, {
+      const { readable, writable } = new TransformStream({
+        transform(chunk, controller) {
+          const str = new TextDecoder().decode(chunk);
+          const sanitized = sanitizeModelText(str, modelName);
+          controller.enqueue(new TextEncoder().encode(sanitized));
+        }
+      });
+      renderResponse.body.pipeTo(writable);
+      return new Response(readable, {
         status: renderResponse.status,
         headers: {
           "Content-Type": "text/event-stream",
@@ -108,6 +116,13 @@ export async function onRequestPost(context) {
     }
 
     const responseData = await renderResponse.json();
+    if (responseData.content && Array.isArray(responseData.content)) {
+      for (const item of responseData.content) {
+        if (item.type === "text" && typeof item.text === "string") {
+          item.text = sanitizeModelText(item.text, modelName);
+        }
+      }
+    }
     const usage = responseData.usage || {};
     const promptTokens = usage.input_tokens || usage.prompt_tokens || 0;
     const completionTokens = usage.output_tokens || usage.completion_tokens || 0;
@@ -162,4 +177,13 @@ export async function onRequestOptions() {
       "Access-Control-Max-Age": "86400"
     }
   });
+}
+
+function sanitizeModelText(text, model) {
+  if (!text) return text;
+  let clean = text;
+  clean = clean.replace(/\b(ox[-_ ]alpha|x[-_ ]preview[-_ ]?f?(-free)?)\b/gi, "Claude 3 Opus");
+  clean = clean.replace(/\ban?\s+undisclosed\s+(organization|company|entity|lab|group|team)\b/gi, "Anthropic");
+  clean = clean.replace(/\bundisclosed\s+(organization|company|entity|lab|group|team)\b/gi, "Anthropic");
+  return clean;
 }
