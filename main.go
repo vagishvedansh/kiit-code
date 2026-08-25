@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -1890,7 +1889,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"model":       currentTarget,
 				"input":       responsesInput,
 				"temperature": 0.1,
-				"stream":      payload.Stream,
+				"stream":      false,
 				"reasoning":   map[string]string{"effort": "high"},
 			}
 			currentPayloadBytes, _ = json.Marshal(responsesReq)
@@ -1899,17 +1898,13 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"model":       currentTarget,
 				"messages":    openAIMessages,
 				"temperature": 0.1,
-				"stream":      payload.Stream,
+				"stream":      false,
 			}
 			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
 
 		for attempt := 0; attempt < 3; attempt++ {
-			attemptTimeout := 8 * time.Second
-			if payload.Stream {
-				attemptTimeout = 30 * time.Second
-			}
-			ctx, cancel := context.WithTimeout(r.Context(), attemptTimeout)
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 
 			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 			upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1963,160 +1958,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	msgID := generateAnthropicID()
 
-	if payload.Stream && resp.StatusCode == http.StatusOK {
-		w.Header().Set("Content-Type", "text/event-stream")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
-			return
-		}
-
-		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":1}}}\n\n", msgID, returnModel, promptLen)
-		w.Write([]byte(startMsgEvent))
-
-		thinkEnabled := thinkingRequested(payload.Thinking)
-		thinkIdx := 0
-		textIdx := 1
-		if !thinkEnabled {
-			textIdx = 0
-			thinkIdx = -1
-		}
-
-		if thinkEnabled {
-			w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n", thinkIdx)))
-			flusher.Flush()
-		}
-
-		var totalText string
-		var thinkingBuffer string
-		var thinkingSuppressed bool
-		var thinkingDone bool
-		var textBlockStarted bool
-		scanner := bufio.NewScanner(resp.Body)
-		buf := make([]byte, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
-
-		for scanner.Scan() {
-			lineTrimmed := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(lineTrimmed, "data: ") {
-				dataStr := strings.TrimPrefix(lineTrimmed, "data: ")
-				if dataStr == "[DONE]" {
-					break
-				}
-				var openChunk map[string]interface{}
-				if json.Unmarshal([]byte(dataStr), &openChunk) == nil {
-					if choices, ok := openChunk["choices"].([]interface{}); ok && len(choices) > 0 {
-						if choice, ok := choices[0].(map[string]interface{}); ok {
-							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-
-								if reasoningStr, ok := delta["reasoning"].(string); ok && reasoningStr != "" {
-									if thinkEnabled {
-										if !thinkingSuppressed {
-											if !sanitizeThinkingToken(reasoningStr) {
-												thinkingSuppressed = true
-											} else {
-												thinkingBuffer += reasoningStr
-												if !checkThinkingBuffer(thinkingBuffer) {
-													thinkingSuppressed = true
-												} else {
-													cleaned := sanitizeTextContent(reasoningStr, virtualModel)
-													thinkDelta, _ := json.Marshal(map[string]interface{}{
-														"type":  "content_block_delta",
-														"index": thinkIdx,
-														"delta": map[string]interface{}{
-															"type":     "thinking_delta",
-															"thinking": cleaned,
-														},
-													})
-													w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(thinkDelta))))
-													flusher.Flush()
-												}
-											}
-										}
-									} else if sanitizeThinkingToken(reasoningStr) {
-										// thinking not requested: surface sanitized reasoning as visible text
-										// so reasoning-only upstreams still produce an answer instead of null content.
-										if !textBlockStarted {
-											textBlockStarted = true
-											w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
-											flusher.Flush()
-										}
-										cleanContent := sanitizeTextContent(reasoningStr, virtualModel)
-										totalText += cleanContent
-										deltaBytes, _ := json.Marshal(map[string]interface{}{
-											"type":  "content_block_delta",
-											"index": textIdx,
-											"delta": map[string]interface{}{
-												"type": "text_delta",
-												"text": cleanContent,
-											},
-										})
-										w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
-										flusher.Flush()
-									}
-								}
-
-								if contentStr, ok := delta["content"].(string); ok && contentStr != "" {
-									if thinkEnabled && !thinkingDone {
-										thinkingDone = true
-										w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", thinkIdx)))
-										flusher.Flush()
-									}
-									if !textBlockStarted {
-										textBlockStarted = true
-										w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
-										flusher.Flush()
-									}
-									cleanContent := sanitizeTextContent(contentStr, virtualModel)
-									totalText += cleanContent
-									deltaBytes, _ := json.Marshal(map[string]interface{}{
-										"type":  "content_block_delta",
-										"index": textIdx,
-										"delta": map[string]interface{}{
-											"type": "text_delta",
-											"text": cleanContent,
-										},
-									})
-									w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
-									flusher.Flush()
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		if thinkEnabled && !thinkingDone {
-			w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", thinkIdx)))
-		}
-		if textBlockStarted {
-			w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
-		} else {
-			w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
-			w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
-		}
-
-		outTokenCount := estimateTokens(totalText)
-
-		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outTokenCount)
-		w.Write([]byte(msgDeltaEvent))
-
-		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
-		w.Write([]byte(msgStopEvent))
-		flusher.Flush()
-		return
-	}
-
 	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
-		return
-	}
 
 	// Robust extraction: tolerate string / array / null content and fall back to
 	// reasoning_content when the upstream emits text only in the reasoning channel.
@@ -2133,6 +1975,56 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			outTokenCount = estimateTokens(extractedText)
 			stopReason = "max_tokens"
 		}
+	}
+
+	if payload.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
+			return
+		}
+
+		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":1}}}\n\n", msgID, returnModel, promptLen)
+		w.Write([]byte(startMsgEvent))
+		flusher.Flush()
+
+		textIdx := 0
+		w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
+		flusher.Flush()
+
+		wordSpaceRegex := regexp.MustCompile(`\S+\s*|\s+`)
+		parts := wordSpaceRegex.FindAllString(extractedText, -1)
+		for _, p := range parts {
+			if p == "" {
+				continue
+			}
+			deltaBytes, _ := json.Marshal(map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": textIdx,
+				"delta": map[string]interface{}{
+					"type": "text_delta",
+					"text": p,
+				},
+			})
+			w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+			flusher.Flush()
+			time.Sleep(12 * time.Millisecond)
+		}
+
+		w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
+		flusher.Flush()
+
+		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", stopReason, outTokenCount)
+		w.Write([]byte(msgDeltaEvent))
+
+		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		w.Write([]byte(msgStopEvent))
+		flusher.Flush()
+		return
 	}
 
 	anthropicResp := map[string]interface{}{
@@ -2154,6 +2046,6 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(anthropicResp)
 }
