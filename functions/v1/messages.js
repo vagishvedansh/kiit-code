@@ -79,8 +79,8 @@ export async function onRequestPost(context) {
       const parsedBody = JSON.parse(bodyText);
       modelName = parsedBody.model || modelName;
       modelName = modelCodes[modelName] || modelName;
-      proxyHeaders.set("X-Model-Name", "claude-3-opus-20240229");
-      parsedBody.model = "claude-3-opus-20240229";
+      proxyHeaders.set("X-Model-Name", modelName);
+      parsedBody.model = modelName;
       isStream = !!parsedBody.stream;
       parsedBody.stream = false;
       bodyToSend = JSON.stringify(parsedBody);
