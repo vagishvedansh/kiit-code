@@ -1488,6 +1488,25 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 
+			// Immediate fallback to sharedDirectClient if Tor is slow or failing
+			if errDo != nil || (resp != nil && resp.StatusCode != http.StatusOK) {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				directReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+				directReq.Header = upstreamReq.Header.Clone()
+				respDirect, errDirect := sharedDirectClient.Do(directReq)
+				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
+					resp = respDirect
+					errDo = nil
+					cancel()
+					break
+				}
+				if respDirect != nil {
+					respDirect.Body.Close()
+				}
+			}
+
 			if resp != nil {
 				log.Printf("[WARN] Upstream %s HTTP %d. Rotating Tor IP...", currentTarget, resp.StatusCode)
 				resp.Body.Close()
@@ -1936,6 +1955,25 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 				cancelFunc = cancel
 				break
+			}
+
+			// Immediate fallback to sharedDirectClient if Tor is slow or failing
+			if errDo != nil || (resp != nil && resp.StatusCode != http.StatusOK) {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				directReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+				directReq.Header = upstreamReq.Header.Clone()
+				respDirect, errDirect := sharedDirectClient.Do(directReq)
+				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
+					resp = respDirect
+					errDo = nil
+					cancelFunc = cancel
+					break
+				}
+				if respDirect != nil {
+					respDirect.Body.Close()
+				}
 			}
 
 			if resp != nil {
