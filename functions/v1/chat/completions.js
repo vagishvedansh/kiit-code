@@ -250,23 +250,38 @@ function sanitizeModelText(text, model) {
 function fixMissingSpaces(text) {
   if (!text) return text;
   let fixed = text;
-  fixed = fixed.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  fixed = fixed.replace(/([.,!?:;])([A-Za-z0-9])/g, '$1 $2');
-  fixed = fixed.replace(/([a-z])([0-9])/g, '$1 $2');
-  fixed = fixed.replace(/([0-9])([a-zA-Z])/g, '$1 $2');
-  fixed = fixed.replace(/(a)(large)/gi, '$1 $2');
-  fixed = fixed.replace(/(large)(language)(model)/gi, '$1 $2 $3');
-  fixed = fixed.replace(/(language)(model)/gi, '$1 $2');
-  fixed = fixed.replace(/(model)(created|developed|trained|designed|assisted)/gi, '$1 $2');
-  fixed = fixed.replace(/(created|developed|trained|designed|assisted)(by|for|to)/gi, '$1 $2');
-  fixed = fixed.replace(/(by|for|to)(Anthropic|OpenAI)/gi, '$1 $2');
-  fixed = fixed.replace(/(designed)(to)(be)/gi, '$1 $2 $3');
-  fixed = fixed.replace(/(to)(be)(helpful|honest|harmless)/gi, '$1 $2 $3');
-  fixed = fixed.replace(/(and)(honest|harmless|helpful|truthful)/gi, '$1 $2');
-  fixed = fixed.replace(/(here)(to)(help)/gi, '$1 $2 $3');
-  fixed = fixed.replace(/(help)(you)(with|today)/gi, '$1 $2 $3');
-  fixed = fixed.replace(/(with)(questions|tasks|writing|coding|a)/gi, '$1 $2');
-  fixed = fixed.replace(/(how)(can)(i)(help)/gi, '$1 $2 $3 $4');
-  fixed = fixed.replace(/\s+/g, ' ');
+  fixed = fixed.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  fixed = fixed.replace(/([.,!?:;])([A-Za-z0-9])/g, "$1 $2");
+  fixed = fixed.replace(/([a-z])([0-9])/g, "$1 $2");
+  fixed = fixed.replace(/([0-9])([a-zA-Z])/g, "$1 $2");
+
+  for (let pass = 0; pass < 2; pass++) {
+    fixed = fixed.replace(/(a)(large)/gi, "$1 $2");
+    fixed = fixed.replace(/(large)(language)(model)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(language)(model)/gi, "$1 $2");
+    fixed = fixed.replace(/(model)(created|developed|trained|designed|assisted)/gi, "$1 $2");
+    fixed = fixed.replace(/(created|developed|trained|designed|assisted)(by|for|to)/gi, "$1 $2");
+    fixed = fixed.replace(/(by|for|to)(Anthropic|OpenAI)/gi, "$1 $2");
+    fixed = fixed.replace(/(designed)(to)(be)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(to)(be)(helpful|honest|harmless|thoughtful|engaging)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(and)(honest|harmless|helpful|truthful|thoughtful|engaging|more)/gi, "$1 $2");
+    fixed = fixed.replace(/(engaging)(across)/gi, "$1 $2");
+    fixed = fixed.replace(/(across)(a)(wide)(range)(of)(topics)/gi, "$1 $2 $3 $4 $5 $6");
+    fixed = fixed.replace(/(wide)(range)(of)(topics|tasks)/gi, "$1 $2 $3 $4");
+    fixed = fixed.replace(/(range)(of)(topics|tasks)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(of)(topics|tasks)/gi, "$1 $2");
+    fixed = fixed.replace(/(here)(to)(help)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(help)(you)(with|today)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(with)(questions|tasks|writing|coding|analysis|whatever|a)/gi, "$1 $2");
+    fixed = fixed.replace(/(how)(can)(i)(help)/gi, "$1 $2 $3 $4");
+    fixed = fixed.replace(/(happy)(to)(help)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(whatever)(you)(need)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(an)(AI)(assistant)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(AI)(assistant)/gi, "$1 $2");
+    fixed = fixed.replace(/(Claude)(3)(Opus|Sonnet|Haiku)/gi, "$1 $2 $3");
+    fixed = fixed.replace(/(Claude)(Opus|Sonnet|Haiku)/gi, "$1 $2");
+  }
+
+  fixed = fixed.replace(/\s+/g, " ");
   return fixed.trim();
 }
