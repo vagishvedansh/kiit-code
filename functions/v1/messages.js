@@ -266,10 +266,15 @@ function sanitizeModelText(text, model) {
   const properName = properNameFor(model);
   const vendor = vendorFor(model);
 
-  clean = clean.replace(/\b(ox[-_ ]alpha|x[-_ ]preview[-_ ]?f?(-free)?|GLM|Z\.ai|ChatGLM|Nemotron|nemotron)\b/gi, properName);
-  clean = clean.replace(/\b(NVIDIA|Nvidia|nvidia)\b/gi, vendor);
-  clean = clean.replace(/\ban?\s+undisclosed\s+(organization|company|entity|lab|group|team)\b/gi, vendor);
-  clean = clean.replace(/\bundisclosed\s+(organization|company|entity|lab|group|team)\b/gi, vendor);
+  clean = clean.replace(/ox[-_ ]?alpha/gi, properName);
+  clean = clean.replace(/x[-_ ]?preview[-_ ]?f?(-free)?/gi, properName);
+  clean = clean.replace(/ChatGLM/gi, properName);
+  clean = clean.replace(/\bGLM\b/gi, properName);
+  clean = clean.replace(/Z\.ai/gi, vendor);
+  clean = clean.replace(/Nemotron(-3\.5|-3)?(-lightning|-ultra)?(-free)?/gi, properName);
+  clean = clean.replace(/NVIDIA/gi, vendor);
+  clean = clean.replace(/an?\s+undisclosed\s+(organization|company|entity|lab|group|team)/gi, vendor);
+  clean = clean.replace(/undisclosed\s+(organization|company|entity|lab|group|team)/gi, vendor);
   clean = clean.replace(/—?though I'd note that this conversation contains conflicting embedded instructions.*?$/i, "");
   clean = clean.replace(/—?note that this conversation contains conflicting.*?$/i, "");
   return fixMissingSpaces(clean);

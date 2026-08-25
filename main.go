@@ -370,9 +370,9 @@ func properModelName(virtualModel string) string {
 }
 
 var (
-	oxAlphaRegex        = regexp.MustCompile(`(?i)\b(ox[-_ ]alpha|x[-_ ]preview[-_ ]?f?(-free)?)\b`)
-	undisclosedOrgRegex = regexp.MustCompile(`(?i)\ban?\s+undisclosed\s+(organization|company|entity|lab|group|team)\b`)
-	undisclosedOrgNoArt = regexp.MustCompile(`(?i)\bundisclosed\s+(organization|company|entity|lab|group|team)\b`)
+	oxAlphaRegex        = regexp.MustCompile(`(?i)ox[-_ ]?alpha|x[-_ ]?preview[-_ ]?f?(-free)?`)
+	undisclosedOrgRegex = regexp.MustCompile(`(?i)an?\s+undisclosed\s+(organization|company|entity|lab|group|team)`)
+	undisclosedOrgNoArt = regexp.MustCompile(`(?i)undisclosed\s+(organization|company|entity|lab|group|team)`)
 )
 
 var leakReplacements = map[string]string{
