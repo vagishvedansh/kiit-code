@@ -1571,6 +1571,39 @@ func extractOpenAIContent(respBody []byte) string {
 	if err := json.Unmarshal(respBody, &raw); err != nil {
 		return ""
 	}
+
+	if objType, ok := raw["object"].(string); ok && objType == "response" {
+		var contentBuilder string
+		var reasoningBuilder string
+		if outputList, ok := raw["output"].([]interface{}); ok {
+			for _, item := range outputList {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if itemMap["type"] == "message" {
+						if contentArr, ok := itemMap["content"].([]interface{}); ok {
+							for _, c := range contentArr {
+								if cMap, ok := c.(map[string]interface{}); ok {
+									if txt, ok := cMap["text"].(string); ok {
+										contentBuilder += txt
+									}
+								}
+							}
+						}
+					} else if itemMap["type"] == "reasoning" {
+						if enc, ok := itemMap["encrypted_content"].(string); ok {
+							reasoningBuilder += enc
+						} else if txt, ok := itemMap["text"].(string); ok {
+							reasoningBuilder += txt
+						}
+					}
+				}
+			}
+		}
+		if contentBuilder != "" {
+			return contentBuilder
+		}
+		return reasoningBuilder
+	}
+
 	choices, ok := raw["choices"].([]interface{})
 	if !ok || len(choices) == 0 {
 		return ""
@@ -1738,15 +1771,34 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
-	openAIReq := map[string]interface{}{
-		"model":       targetModel,
-		"messages":    openAIMessages,
-		"temperature": 0.1,
-		"stream":      payload.Stream,
-	}
-
 	targetURL, targetAuth := getUpstreamConfig(targetModel)
-	openAIPayloadBytes, _ := json.Marshal(openAIReq)
+
+	var openAIPayloadBytes []byte
+	if strings.HasSuffix(targetURL, "/responses") {
+		responsesInput := make([]map[string]interface{}, 0, len(openAIMessages))
+		for _, m := range openAIMessages {
+			responsesInput = append(responsesInput, map[string]interface{}{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		}
+		responsesReq := map[string]interface{}{
+			"model":       targetModel,
+			"input":       responsesInput,
+			"temperature": 0.1,
+			"stream":      payload.Stream,
+			"reasoning":   map[string]string{"effort": "high"},
+		}
+		openAIPayloadBytes, _ = json.Marshal(responsesReq)
+	} else {
+		openAIReq := map[string]interface{}{
+			"model":       targetModel,
+			"messages":    openAIMessages,
+			"temperature": 0.1,
+			"stream":      payload.Stream,
+		}
+		openAIPayloadBytes, _ = json.Marshal(openAIReq)
+	}
 	var resp *http.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
