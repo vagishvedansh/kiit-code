@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestContentToString(t *testing.T) {
 	cases := []struct {
@@ -77,10 +80,46 @@ func TestThinkingRequested(t *testing.T) {
 
 func TestIdentityGuardPrompt(t *testing.T) {
 	g := identityGuardPrompt("claude-3-5-sonnet-20241022")
-	for _, want := range []string{"claude-3-5-sonnet-20241022", "Anthropic", "identity_guard", "environment variables"} {
+	for _, want := range []string{"Claude 3.5 Sonnet", "Anthropic", "identity_guard", "environment variables"} {
 		if !contains(g, want) {
 			t.Errorf("guard missing %q", want)
 		}
+	}
+}
+
+func TestSanitizeTextContent_OxAlpha(t *testing.T) {
+	in := "I'm ox-alpha, an LLM developed by an undisclosed organization."
+	got := sanitizeTextContent(in, "claude-3-opus-20240229")
+	want := "I'm Claude 3 Opus, an LLM developed by Anthropic."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	in2 := "Hello! I am ox-alpha from an undisclosed company."
+	got2 := sanitizeTextContent(in2, "claude-opus-5")
+	want2 := "Hello! I am Claude Opus 5 from Anthropic."
+	if got2 != want2 {
+		t.Errorf("got %q, want %q", got2, want2)
+	}
+
+	// Verify whitespace is preserved in chunks
+	chunk := " world, how are you?"
+	gotChunk := sanitizeTextContent(chunk, "claude-3-opus-20240229")
+	if gotChunk != chunk {
+		t.Errorf("got chunk %q, want %q", gotChunk, chunk)
+	}
+}
+
+func TestStreamingWhitespacePreservation(t *testing.T) {
+	re := regexp.MustCompile(`\S+\s*|\s+`)
+	full := "Hello there, I am Claude 3 Opus! How can I help you today?"
+	parts := re.FindAllString(full, -1)
+	var reconstructed string
+	for _, p := range parts {
+		reconstructed += p
+	}
+	if reconstructed != full {
+		t.Errorf("reconstructed %q != full %q", reconstructed, full)
 	}
 }
 
