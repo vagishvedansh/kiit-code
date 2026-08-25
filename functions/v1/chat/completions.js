@@ -186,16 +186,31 @@ function properNameFor(model) {
   if (m.includes("sonnet")) return "Claude 3.5 Sonnet";
   if (m.includes("haiku")) return "Claude 3.5 Haiku";
   if (m.includes("gpt-4o-mini")) return "GPT-4o-mini";
-  if (m.includes("gpt-4o")) return "GPT-4o";
+  if (m.includes("gpt-4o") || m.includes("gpt-4")) return "GPT-4o";
+  if (m.includes("deepseek-r1")) return "DeepSeek-R1";
+  if (m.includes("deepseek-v3") || m.includes("deepseek")) return "DeepSeek-V3";
+  if (m.includes("qwen-3") || m.includes("qwen-2") || m.includes("qwen")) return "Qwen 2.5 Coder";
+  if (m.includes("kimi")) return "Kimi";
+  if (m.includes("minimax")) return "MiniMax";
   return "GPT-4o";
+}
+
+function vendorFor(model) {
+  const m = (model || "").toLowerCase();
+  if (/claude|opus|sonnet|haiku/i.test(m)) return "Anthropic";
+  if (/gpt/i.test(m)) return "OpenAI";
+  if (/deepseek/i.test(m)) return "DeepSeek";
+  if (/qwen/i.test(m)) return "Alibaba Cloud";
+  if (/kimi/i.test(m)) return "Moonshot AI";
+  if (/minimax/i.test(m)) return "MiniMax";
+  return "OpenAI";
 }
 
 function sanitizeModelText(text, model) {
   if (!text || typeof text !== "string") return text;
   let clean = text;
   const properName = properNameFor(model);
-  const isClaude = /claude|opus|sonnet|haiku/i.test(model);
-  const vendor = isClaude ? "Anthropic" : "OpenAI";
+  const vendor = vendorFor(model);
 
   clean = clean.replace(/\b(ox[-_ ]alpha|x[-_ ]preview[-_ ]?f?(-free)?|GLM|Z\.ai|ChatGLM|Nemotron|nemotron)\b/gi, properName);
   clean = clean.replace(/\b(NVIDIA|Nvidia|nvidia)\b/gi, vendor);
