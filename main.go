@@ -1362,40 +1362,88 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var errDo error
 
-	reqClient := newTorClient()
+	var targetModels = []string{targetModel}
+	if targetModel != "nemotron-3.5-lightning-free" && targetModel != "x-preview-f-free" {
+		targetModels = append(targetModels, "nemotron-3.5-lightning-free", "x-preview-f-free")
+	}
 
-	for attempt := 0; attempt < 12; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
-
-		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(newBody))
-		upstreamReq.Header.Set("Content-Type", "application/json")
-		if targetAuth != "" {
-			upstreamReq.Header.Set("Authorization", targetAuth)
+	for _, currentTarget := range targetModels {
+		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
+		tempPayload["model"] = currentTarget
+		if strings.HasSuffix(currentTargetURL, "/responses") {
+			if msgs, ok := tempPayload["messages"].([]interface{}); ok {
+				inputs := make([]map[string]interface{}, 0, len(msgs))
+				for _, m := range msgs {
+					if mMap, ok := m.(map[string]interface{}); ok {
+						role := "user"
+						if r, ok := mMap["role"].(string); ok {
+							role = r
+						}
+						inputs = append(inputs, map[string]interface{}{
+							"role":    role,
+							"content": mMap["content"],
+						})
+					}
+				}
+				tempPayload["input"] = inputs
+				delete(tempPayload, "messages")
+			}
+			tempPayload["reasoning"] = map[string]string{"effort": "high"}
+		} else {
+			if inputs, ok := tempPayload["input"].([]interface{}); ok {
+				msgs := make([]map[string]interface{}, 0, len(inputs))
+				for _, in := range inputs {
+					if inMap, ok := in.(map[string]interface{}); ok {
+						msgs = append(msgs, map[string]interface{}{
+							"role":    inMap["role"],
+							"content": inMap["content"],
+						})
+					}
+				}
+				tempPayload["messages"] = msgs
+				delete(tempPayload, "input")
+				delete(tempPayload, "reasoning")
+			}
 		}
-		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
-		upstreamReq.Header.Del("X-Forwarded-For")
-		upstreamReq.Header.Del("X-Real-IP")
-		upstreamReq.Header.Del("CF-Connecting-IP")
+		currentBody, _ := json.Marshal(tempPayload)
 
-		torSem <- struct{}{}
-		resp, errDo = reqClient.Do(upstreamReq)
-		<-torSem
+		for attempt := 0; attempt < 3; attempt++ {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+
+			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+			upstreamReq.Header.Set("Content-Type", "application/json")
+			if currentTargetAuth != "" {
+				upstreamReq.Header.Set("Authorization", currentTargetAuth)
+			}
+			upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+			upstreamReq.Header.Del("X-Forwarded-For")
+			upstreamReq.Header.Del("X-Real-IP")
+			upstreamReq.Header.Del("CF-Connecting-IP")
+
+			torSem <- struct{}{}
+			resp, errDo = reqClient.Do(upstreamReq)
+			<-torSem
+
+			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
+				cancel()
+				break
+			}
+
+			if resp != nil {
+				log.Printf("[WARN] Upstream %s HTTP %d. Rotating Tor IP...", currentTarget, resp.StatusCode)
+				resp.Body.Close()
+			} else {
+				log.Printf("[WARN] Upstream %s connection error: %v. Rotating Tor IP...", currentTarget, errDo)
+			}
+			cancel()
+			tryRotateIP()
+		}
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-			cancel()
 			break
 		}
-
-		if resp != nil {
-			log.Printf("[WARN] Upstream HTTP %d (attempt %d/12). Rotating Tor IP...", resp.StatusCode, attempt+1)
-			resp.Body.Close()
-		} else {
-			log.Printf("[WARN] Upstream connection error: %v (attempt %d/12). Rotating Tor IP...", errDo, attempt+1)
-		}
-		cancel()
-
-		tryRotateIP()
 	}
 
 	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -1771,76 +1819,86 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
-	targetURL, targetAuth := getUpstreamConfig(targetModel)
-
-	var openAIPayloadBytes []byte
-	if strings.HasSuffix(targetURL, "/responses") {
-		responsesInput := make([]map[string]interface{}, 0, len(openAIMessages))
-		for _, m := range openAIMessages {
-			responsesInput = append(responsesInput, map[string]interface{}{
-				"role":    m.Role,
-				"content": m.Content,
-			})
-		}
-		responsesReq := map[string]interface{}{
-			"model":       targetModel,
-			"input":       responsesInput,
-			"temperature": 0.1,
-			"stream":      payload.Stream,
-			"reasoning":   map[string]string{"effort": "high"},
-		}
-		openAIPayloadBytes, _ = json.Marshal(responsesReq)
-	} else {
-		openAIReq := map[string]interface{}{
-			"model":       targetModel,
-			"messages":    openAIMessages,
-			"temperature": 0.1,
-			"stream":      payload.Stream,
-		}
-		openAIPayloadBytes, _ = json.Marshal(openAIReq)
+	var targetModels = []string{targetModel}
+	if targetModel != "nemotron-3.5-lightning-free" && targetModel != "x-preview-f-free" {
+		targetModels = append(targetModels, "nemotron-3.5-lightning-free", "x-preview-f-free")
 	}
+
 	var resp *http.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
 
 	reqClient := newTorClient()
 
-	for attempt := 0; attempt < 8; attempt++ {
-		attemptTimeout := 12 * time.Second
-		if payload.Stream {
-			attemptTimeout = 45 * time.Second
+	for _, currentTarget := range targetModels {
+		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
+		var currentPayloadBytes []byte
+		if strings.HasSuffix(currentTargetURL, "/responses") {
+			responsesInput := make([]map[string]interface{}, 0, len(openAIMessages))
+			for _, m := range openAIMessages {
+				responsesInput = append(responsesInput, map[string]interface{}{
+					"role":    m.Role,
+					"content": m.Content,
+				})
+			}
+			responsesReq := map[string]interface{}{
+				"model":       currentTarget,
+				"input":       responsesInput,
+				"temperature": 0.1,
+				"stream":      payload.Stream,
+				"reasoning":   map[string]string{"effort": "high"},
+			}
+			currentPayloadBytes, _ = json.Marshal(responsesReq)
+		} else {
+			openAIReq := map[string]interface{}{
+				"model":       currentTarget,
+				"messages":    openAIMessages,
+				"temperature": 0.1,
+				"stream":      payload.Stream,
+			}
+			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), attemptTimeout)
 
-		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(openAIPayloadBytes))
-		upstreamReq.Header.Set("Content-Type", "application/json")
-		if targetAuth != "" {
-			upstreamReq.Header.Set("Authorization", targetAuth)
+		for attempt := 0; attempt < 3; attempt++ {
+			attemptTimeout := 8 * time.Second
+			if payload.Stream {
+				attemptTimeout = 30 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), attemptTimeout)
+
+			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+			upstreamReq.Header.Set("Content-Type", "application/json")
+			if currentTargetAuth != "" {
+				upstreamReq.Header.Set("Authorization", currentTargetAuth)
+			}
+			upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+			upstreamReq.Header.Del("X-Forwarded-For")
+			upstreamReq.Header.Del("X-Real-IP")
+			upstreamReq.Header.Del("CF-Connecting-IP")
+
+			torSem <- struct{}{}
+			resp, errDo = reqClient.Do(upstreamReq)
+			<-torSem
+
+			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
+				cancelFunc = cancel
+				break
+			}
+
+			if resp != nil {
+				log.Printf("[WARN] Anthropic upstream %s HTTP %d. Rotating Tor IP...", currentTarget, resp.StatusCode)
+				resp.Body.Close()
+			} else {
+				log.Printf("[WARN] Anthropic upstream %s connection error: %v. Rotating Tor IP...", currentTarget, errDo)
+			}
+			cancel()
+			tryRotateIP()
 		}
-		upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-
-		upstreamReq.Header.Del("X-Forwarded-For")
-		upstreamReq.Header.Del("X-Real-IP")
-		upstreamReq.Header.Del("CF-Connecting-IP")
-
-		torSem <- struct{}{}
-		resp, errDo = reqClient.Do(upstreamReq)
-		<-torSem
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-			cancelFunc = cancel
 			break
 		}
-
-		if resp != nil {
-			log.Printf("[WARN] Anthropic upstream HTTP %d (attempt %d/12). Rotating Tor IP...", resp.StatusCode, attempt+1)
-			resp.Body.Close()
-		} else {
-			log.Printf("[WARN] Anthropic upstream connection error: %v (attempt %d/12). Rotating Tor IP...", errDo, attempt+1)
-		}
-		cancel()
-
-		tryRotateIP()
 	}
 	if cancelFunc != nil {
 		defer cancelFunc()
