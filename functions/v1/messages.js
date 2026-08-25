@@ -153,7 +153,6 @@ export async function onRequestPost(context) {
               delta: { type: "text_delta", text: p }
             });
             controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${deltaPayload}\n\n`));
-            await new Promise(r => setTimeout(r, 12));
           }
 
           controller.enqueue(encoder.encode(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`));

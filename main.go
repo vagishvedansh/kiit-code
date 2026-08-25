@@ -643,42 +643,42 @@ type ChatResponse struct {
 var modelMap = map[string]string{
 	// Direct Matches & Aliases
 	"ox-alpha":                "x-preview-f-free",
-	"muse-spark":              "muse-spark-1.2-contributor-free",
+	"muse-spark":              "laguna-s-2.1-free",
 	"kimi-k3":                 "moonshotai/kimi-k3",
 	"moonshotai/kimi-k3":      "moonshotai/kimi-k3",
 	"kimi-k2.6":               "moonshotai/kimi-k3-free",
-	"deepseek-v4-flash":       "muse-spark-1.2-contributor-free",
-	"nemotron-3-ultra":        "nemotron-3-ultra-free",
-	"nvidia-nemotron-3-ultra": "nemotron-3-ultra-free",
-	"ling-3.0-flash":          "inclusionai/ling-3.0-flash:free",
+	"deepseek-v4-flash":       "laguna-s-2.1-free",
+	"nemotron-3-ultra":        "nemotron-3.5-lightning-free",
+	"nvidia-nemotron-3-ultra": "nemotron-3.5-lightning-free",
+	"ling-3.0-flash":          "nemotron-3.5-lightning-free",
 	"laguna-s-2.1":            "laguna-s-2.1-free",
-	"mimo-v2.5":               "mimo-v2.5-free",
-	"qwen-3.8-max":            "x-preview-f-free",
+	"mimo-v2.5":               "laguna-s-2.1-free",
+	"qwen-3.8-max":            "nemotron-3.5-lightning-free",
 
 	// OpenAI Series
-	"gpt-4o":        "x-preview-f-free",
-	"gpt-4o-mini":   "ling-3.0-flash-free",
-	"gpt-4":         "moonshotai/kimi-k3-free",
-	"gpt-4.1-mini":  "muse-spark-1.2-contributor-free",
-	"gpt-3.5-turbo": "mimo-auto",
+	"gpt-4o":        "nemotron-3.5-lightning-free",
+	"gpt-4o-mini":   "nemotron-3.5-lightning-free",
+	"gpt-4":         "nemotron-3.5-lightning-free",
+	"gpt-4.1-mini":  "nemotron-3.5-lightning-free",
+	"gpt-3.5-turbo": "laguna-s-2.1-free",
 
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "nemotron-3.5-lightning-free",
 	"claude-3-5-sonnet-20241022": "nemotron-3.5-lightning-free",
 	"claude-3-5-haiku-20241022":  "nemotron-3.5-lightning-free",
-	"claude-opus-5":              "x-preview-f-free",
-	"claude-3-opus-20240229":     "x-preview-f-free",
+	"claude-opus-5":              "nemotron-3.5-lightning-free",
+	"claude-3-opus-20240229":     "nemotron-3.5-lightning-free",
 	"claude-3-haiku-20240307":    "nemotron-3.5-lightning-free",
 	"claude-3-sonnet-20240229":   "nemotron-3.5-lightning-free",
 	"claude-sonnet-4":            "nemotron-3.5-lightning-free",
 
 	// Reasoning, Code & Specialist
-	"deepseek-r1":      "big-pickle",
-	"deepseek-r1-free": "muse-spark-1.2-contributor-free",
-	"deepseek-pro":     "muse-spark-1.2-contributor-free",
-	"deepseek-v3":      "muse-spark-1.2-contributor-free",
-	"qwen-2.5-coder":   "x-preview-f-free",
-	"qwen-3.6-coder":   "x-preview-f-free",
+	"deepseek-r1":      "nemotron-3.5-lightning-free",
+	"deepseek-r1-free": "nemotron-3.5-lightning-free",
+	"deepseek-pro":     "nemotron-3.5-lightning-free",
+	"deepseek-v3":      "nemotron-3.5-lightning-free",
+	"qwen-2.5-coder":   "nemotron-3.5-lightning-free",
+	"qwen-3.6-coder":   "nemotron-3.5-lightning-free",
 	"minimax-m2.7":     "laguna-s-2.1-free",
 }
 
@@ -688,8 +688,6 @@ func getUpstreamConfig(targetModel string) (string, string) {
 		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
 	case "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
 		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
-	case "muse-spark-1.2-contributor-free":
-		return "https://opencode.ai/zen/v1/responses", ""
 	default:
 		return "https://opencode.ai/zen/v1/chat/completions", ""
 	}

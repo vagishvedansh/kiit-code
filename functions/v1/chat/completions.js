@@ -133,7 +133,6 @@ export async function onRequestPost(context) {
               choices: [{ index: 0, delta: { content: p, role: "assistant" }, finish_reason: null }]
             });
             controller.enqueue(encoder.encode(`data: ${chunkPayload}\n\n`));
-            await new Promise(r => setTimeout(r, 12));
           }
 
           const finalPayload = JSON.stringify({
