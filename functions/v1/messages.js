@@ -110,6 +110,28 @@ export async function onRequestPost(context) {
       }
     }
 
+    if (responseData.choices && Array.isArray(responseData.choices)) {
+      for (const choice of responseData.choices) {
+        if (choice.message && typeof choice.message.content === "string") {
+          choice.message.content = sanitizeModelText(choice.message.content, modelName);
+          extractedText += choice.message.content;
+        }
+      }
+      responseData.content = [
+        {
+          type: "text",
+          text: extractedText
+        }
+      ];
+      responseData.role = "assistant";
+      responseData.stop_reason = "end_turn";
+      delete responseData.choices;
+    }
+
+    if (modelName) {
+      responseData.model = modelName;
+    }
+
     const usage = responseData.usage || {};
     const promptTokens = usage.input_tokens || usage.prompt_tokens || 0;
     const completionTokens = usage.output_tokens || usage.completion_tokens || 0;

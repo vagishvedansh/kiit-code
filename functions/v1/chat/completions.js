@@ -98,6 +98,30 @@ export async function onRequestPost(context) {
         }
       }
     }
+
+    if (responseData.content && Array.isArray(responseData.content)) {
+      for (const item of responseData.content) {
+        if (item.type === "text" && typeof item.text === "string") {
+          item.text = sanitizeModelText(item.text, modelName);
+          extractedText += item.text;
+        }
+      }
+      responseData.choices = [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: extractedText
+          },
+          finish_reason: "stop"
+        }
+      ];
+      delete responseData.content;
+    }
+
+    if (modelName) {
+      responseData.model = modelName;
+    }
     const usage = responseData.usage || {};
     const promptTokens = usage.prompt_tokens || 0;
     const completionTokens = usage.completion_tokens || 0;
