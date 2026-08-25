@@ -1803,13 +1803,14 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	var errDo error
 	var cancelFunc context.CancelFunc
 
-	reqTimeout := 35 * time.Second
-	if payload.Stream {
-		reqTimeout = 120 * time.Second
-	}
+	reqClient := newTorClient()
 
-	for attempt := 0; attempt < 12; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), reqTimeout)
+	for attempt := 0; attempt < 8; attempt++ {
+		attemptTimeout := 12 * time.Second
+		if payload.Stream {
+			attemptTimeout = 45 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), attemptTimeout)
 
 		upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(openAIPayloadBytes))
 		upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1822,9 +1823,8 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		upstreamReq.Header.Del("X-Real-IP")
 		upstreamReq.Header.Del("CF-Connecting-IP")
 
-		client := newTorClient()
 		torSem <- struct{}{}
-		resp, errDo = client.Do(upstreamReq)
+		resp, errDo = reqClient.Do(upstreamReq)
 		<-torSem
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
