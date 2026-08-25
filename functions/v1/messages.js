@@ -59,6 +59,8 @@ export async function onRequestPost(context) {
 
   const proxyHeaders = new Headers(request.headers);
   proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
+  proxyHeaders.set("Accept", "application/json");
+  proxyHeaders.set("Content-Type", "application/json");
   proxyHeaders.delete("host");
   proxyHeaders.delete("content-length");
 
