@@ -617,6 +617,8 @@ func getUpstreamConfig(targetModel string) (string, string) {
 		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
 	case "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
 		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
+	case "muse-spark-1.2-contributor-free":
+		return "https://opencode.ai/zen/v1/responses", ""
 	default:
 		return "https://opencode.ai/zen/v1/chat/completions", ""
 	}
@@ -1015,12 +1017,52 @@ func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []by
 		return body
 	}
 
-	if errObj, hasErr := raw["error"]; hasErr {
+	if errObj, hasErr := raw["error"]; hasErr && errObj != nil {
 		log.Printf("[ERROR] Upstream returned error: %v", errObj)
 		if strings.Contains(virtualModel, "claude") {
 			return []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
 		}
 		return []byte(`{"error":{"message":"The requested model is currently experiencing high load. Please retry.","type":"server_error","code":"service_unavailable"}}`)
+	}
+
+	// Adapt OpenAI /responses object to chat.completion
+	if objType, ok := raw["object"].(string); ok && objType == "response" {
+		var contentBuilder string
+		var reasoningBuilder string
+		if outputList, ok := raw["output"].([]interface{}); ok {
+			for _, item := range outputList {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if itemMap["type"] == "message" {
+						if contentArr, ok := itemMap["content"].([]interface{}); ok {
+							for _, c := range contentArr {
+								if cMap, ok := c.(map[string]interface{}); ok {
+									if txt, ok := cMap["text"].(string); ok {
+										contentBuilder += txt
+									}
+								}
+							}
+						}
+					} else if itemMap["type"] == "reasoning" {
+						if enc, ok := itemMap["encrypted_content"].(string); ok {
+							reasoningBuilder += enc
+						} else if txt, ok := itemMap["text"].(string); ok {
+							reasoningBuilder += txt
+						}
+					}
+				}
+			}
+		}
+		raw["choices"] = []interface{}{
+			map[string]interface{}{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":              "assistant",
+					"content":           contentBuilder,
+					"reasoning_content": reasoningBuilder,
+				},
+				"finish_reason": "stop",
+			},
+		}
 	}
 
 	if strings.Contains(virtualModel, "claude") {
@@ -1290,11 +1332,32 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 		tempPayload["temperature"] = 0.1
 	}
-	// Always buffer the upstream response (force non-streaming upstream) and,
-	// if the client requested streaming, re-emit it as SSE ourselves. This
-	// makes streaming work reliably regardless of upstream streaming support.
 	delete(tempPayload, "stream")
 	tempPayload["stream"] = false
+
+	if strings.HasSuffix(targetURL, "/responses") {
+		if msgs, ok := tempPayload["messages"].([]interface{}); ok {
+			inputs := make([]map[string]interface{}, 0, len(msgs))
+			for _, m := range msgs {
+				if mMap, ok := m.(map[string]interface{}); ok {
+					role := "user"
+					if r, ok := mMap["role"].(string); ok {
+						role = r
+					}
+					inputs = append(inputs, map[string]interface{}{
+						"role":    role,
+						"content": mMap["content"],
+					})
+				}
+			}
+			tempPayload["input"] = inputs
+			delete(tempPayload, "messages")
+		}
+		if _, hasReasoning := tempPayload["reasoning"]; !hasReasoning {
+			tempPayload["reasoning"] = map[string]string{"effort": "high"}
+		}
+	}
+
 	newBody, _ := json.Marshal(tempPayload)
 	var resp *http.Response
 	var errDo error
