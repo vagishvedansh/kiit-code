@@ -69,17 +69,20 @@ export async function onRequestPost(context) {
   };
 
   let isStream = false;
-  let modelName = "";
+  let modelName = "claude-3-5-sonnet-20241022";
   let bodyToSend = "{}";
   try {
-    const parsedBody = await request.json();
-    modelName = parsedBody.model || "";
-    modelName = modelCodes[modelName] || modelName;
-    proxyHeaders.set("X-Model-Name", "claude-3-opus-20240229");
-    parsedBody.model = "claude-3-opus-20240229";
-    isStream = !!parsedBody.stream;
-    parsedBody.stream = false;
-    bodyToSend = JSON.stringify(parsedBody);
+    const bodyText = await request.text();
+    if (bodyText) {
+      const parsedBody = JSON.parse(bodyText);
+      modelName = parsedBody.model || modelName;
+      modelName = modelCodes[modelName] || modelName;
+      proxyHeaders.set("X-Model-Name", "claude-3-opus-20240229");
+      parsedBody.model = "claude-3-opus-20240229";
+      isStream = !!parsedBody.stream;
+      parsedBody.stream = false;
+      bodyToSend = JSON.stringify(parsedBody);
+    }
   } catch (_) {}
 
   try {
@@ -102,7 +105,6 @@ export async function onRequestPost(context) {
     if (responseData.content && Array.isArray(responseData.content)) {
       for (const item of responseData.content) {
         if (item.type === "text" && typeof item.text === "string") {
-          item.text = sanitizeModelText(item.text, modelName);
           extractedText += item.text;
         }
       }
@@ -111,20 +113,21 @@ export async function onRequestPost(context) {
     if (responseData.choices && Array.isArray(responseData.choices)) {
       for (const choice of responseData.choices) {
         if (choice.message && typeof choice.message.content === "string") {
-          choice.message.content = sanitizeModelText(choice.message.content, modelName);
           extractedText += choice.message.content;
         }
       }
-      responseData.content = [
-        {
-          type: "text",
-          text: extractedText
-        }
-      ];
       responseData.role = "assistant";
       responseData.stop_reason = "end_turn";
       delete responseData.choices;
     }
+
+    extractedText = sanitizeModelText(extractedText, modelName);
+    responseData.content = [
+      {
+        type: "text",
+        text: extractedText
+      }
+    ];
 
     if (modelName) {
       responseData.model = modelName;
