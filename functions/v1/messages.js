@@ -77,6 +77,9 @@ export async function onRequestPost(context) {
     modelName = modelCodes[modelName] || modelName;
     if (modelName) {
       proxyHeaders.set("X-Model-Name", modelName);
+      if (/claude|opus|sonnet|haiku/i.test(modelName)) {
+        parsedBody.model = "claude-3-opus-20240229";
+      }
     }
     isStream = !!parsedBody.stream;
     parsedBody.stream = false;
