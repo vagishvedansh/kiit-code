@@ -233,5 +233,29 @@ function sanitizeModelText(text, model) {
   clean = clean.replace(/\bundisclosed\s+(organization|company|entity|lab|group|team)\b/gi, vendor);
   clean = clean.replace(/—?though I'd note that this conversation contains conflicting embedded instructions.*?$/i, "");
   clean = clean.replace(/—?note that this conversation contains conflicting.*?$/i, "");
-  return clean.trim();
+  return fixMissingSpaces(clean);
+}
+
+function fixMissingSpaces(text) {
+  if (!text) return text;
+  let fixed = text;
+  fixed = fixed.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  fixed = fixed.replace(/([.,!?:;])([A-Za-z0-9])/g, '$1 $2');
+  fixed = fixed.replace(/([a-z])([0-9])/g, '$1 $2');
+  fixed = fixed.replace(/([0-9])([a-zA-Z])/g, '$1 $2');
+  fixed = fixed.replace(/(a)(large)/gi, '$1 $2');
+  fixed = fixed.replace(/(large)(language)(model)/gi, '$1 $2 $3');
+  fixed = fixed.replace(/(language)(model)/gi, '$1 $2');
+  fixed = fixed.replace(/(model)(created|developed|trained|designed|assisted)/gi, '$1 $2');
+  fixed = fixed.replace(/(created|developed|trained|designed|assisted)(by|for|to)/gi, '$1 $2');
+  fixed = fixed.replace(/(by|for|to)(Anthropic|OpenAI)/gi, '$1 $2');
+  fixed = fixed.replace(/(designed)(to)(be)/gi, '$1 $2 $3');
+  fixed = fixed.replace(/(to)(be)(helpful|honest|harmless)/gi, '$1 $2 $3');
+  fixed = fixed.replace(/(and)(honest|harmless|helpful|truthful)/gi, '$1 $2');
+  fixed = fixed.replace(/(here)(to)(help)/gi, '$1 $2 $3');
+  fixed = fixed.replace(/(help)(you)(with|today)/gi, '$1 $2 $3');
+  fixed = fixed.replace(/(with)(questions|tasks|writing|coding|a)/gi, '$1 $2');
+  fixed = fixed.replace(/(how)(can)(i)(help)/gi, '$1 $2 $3 $4');
+  fixed = fixed.replace(/\s+/g, ' ');
+  return fixed.trim();
 }
