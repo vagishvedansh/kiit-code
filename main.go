@@ -702,9 +702,40 @@ func getUpstreamConfig(targetModel string) (string, string) {
 		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
 	case "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
 		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
-	default:
-		return "https://opencode.ai/zen/v1/chat/completions", ""
 	}
+
+	endpoint := "chat/completions"
+	mid := strings.Split(targetModel, ":")[0]
+	
+	anthropicNative := map[string]bool{
+		"union-alpha": true, "claude-3-5-haiku": true, "claude-haiku-4-5": true,
+		"claude-fable-5": true, "claude-fable-5-1": true, "claude-opus-4-1": true,
+		"claude-opus-4-5": true, "claude-opus-4-6": true, "claude-opus-4-7": true,
+		"claude-opus-4-8": true, "claude-opus-5": true, "claude-sonnet-4": true,
+		"claude-sonnet-4-5": true, "claude-sonnet-4-6": true, "claude-sonnet-5": true,
+		"minimax-m2.1-free": true, "minimax-m2.5-free": true, "minimax-m3-free": true,
+		"qwen3.5-plus": true, "qwen3.6-plus": true, "qwen3.6-plus-free": true,
+	}
+
+	responsesNative := map[string]bool{
+		"muse-spark-1.2": true, "muse-spark-1.2-contributor-free": true,
+		"muse-spark-1.3": true, "muse-spark-1.3-contributor-free": true,
+		"big-pickle": true,
+		"kimi-k3": true, "kimi-k2.6": true, "kimi-k2.5": true,
+		"gemini-3.8-flash": true, "gemini-3.7-flash": true, "gemini-3.5-flash": true,
+		"gemini-3.5-flash-lite": true, "gemini-3.1-pro": true, "gemini-3.6-flash": true,
+		"qwen3.8-max": true, "qwen3.8-flash": true,
+		"glm-5": true, "glm-5.1": true, "glm-5.2": true, "glm-5.3": true, "glm-5.3-flash": true,
+		"deepseek-v4.1-flash": true, "minimax-m3": true,
+	}
+
+	if anthropicNative[targetModel] || anthropicNative[mid] {
+		endpoint = "messages"
+	} else if responsesNative[targetModel] || responsesNative[mid] || strings.HasPrefix(targetModel, "muse") || strings.HasPrefix(mid, "muse") {
+		endpoint = "responses"
+	}
+
+	return "https://opencode.ai/zen/v1/" + endpoint, ""
 }
 
 func generateSessionID() string {
@@ -1446,6 +1477,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				delete(tempPayload, "messages")
 			}
 			tempPayload["reasoning"] = map[string]string{"effort": "high"}
+			tempPayload["store"] = false
+			if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
+				tempPayload["prompt_cache_key"] = reqSession
+			} else {
+				tempPayload["prompt_cache_key"] = generateSessionID()
+			}
 		} else {
 			if inputs, ok := tempPayload["input"].([]interface{}); ok {
 				msgs := make([]map[string]interface{}, 0, len(inputs))
@@ -1470,10 +1507,31 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
 			upstreamReq.Header.Set("Content-Type", "application/json")
-			if currentTargetAuth != "" {
-				upstreamReq.Header.Set("Authorization", currentTargetAuth)
+			
+			if strings.Contains(currentTargetURL, "opencode.ai") {
+				upstreamReq.Header.Set("Authorization", "Bearer public")
+				upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				upstreamReq.Header.Set("x-opencode-client", "cli")
+				upstreamReq.Header.Set("x-opencode-project", "global")
+				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
+				
+				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
+					upstreamReq.Header.Set("x-opencode-session", reqSession)
+				}
+				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
+					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
+				}
+				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
+					upstreamReq.Header.Set("x-opencode-request", reqReq)
+				} else {
+					upstreamReq.Header.Set("x-opencode-request", generateSessionID())
+				}
+			} else {
+				if currentTargetAuth != "" {
+					upstreamReq.Header.Set("Authorization", currentTargetAuth)
+				}
+				upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 			}
-			upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 			upstreamReq.Header.Del("X-Forwarded-For")
 			upstreamReq.Header.Del("X-Real-IP")
@@ -1916,12 +1974,18 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					"content": m.Content,
 				})
 			}
+			promptCacheKey := r.Header.Get("X-Opencode-Session")
+			if promptCacheKey == "" {
+				promptCacheKey = generateSessionID()
+			}
 			responsesReq := map[string]interface{}{
 				"model":       currentTarget,
 				"input":       responsesInput,
 				"temperature": 0.1,
 				"stream":      false,
 				"reasoning":   map[string]string{"effort": "high"},
+				"store":       false,
+				"prompt_cache_key": promptCacheKey,
 			}
 			currentPayloadBytes, _ = json.Marshal(responsesReq)
 		} else {
@@ -1939,10 +2003,31 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 			upstreamReq.Header.Set("Content-Type", "application/json")
-			if currentTargetAuth != "" {
-				upstreamReq.Header.Set("Authorization", currentTargetAuth)
+			
+			if strings.Contains(currentTargetURL, "opencode.ai") {
+				upstreamReq.Header.Set("Authorization", "Bearer public")
+				upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				upstreamReq.Header.Set("x-opencode-client", "cli")
+				upstreamReq.Header.Set("x-opencode-project", "global")
+				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
+				
+				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
+					upstreamReq.Header.Set("x-opencode-session", reqSession)
+				}
+				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
+					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
+				}
+				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
+					upstreamReq.Header.Set("x-opencode-request", reqReq)
+				} else {
+					upstreamReq.Header.Set("x-opencode-request", generateSessionID())
+				}
+			} else {
+				if currentTargetAuth != "" {
+					upstreamReq.Header.Set("Authorization", currentTargetAuth)
+				}
+				upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 			}
-			upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 			upstreamReq.Header.Del("X-Forwarded-For")
 			upstreamReq.Header.Del("X-Real-IP")
