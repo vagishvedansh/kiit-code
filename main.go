@@ -8,6 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	fhttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 	"io"
 	"log"
 	"net"
@@ -620,11 +623,11 @@ type MimoTokenCache struct {
 	mu        sync.RWMutex
 	jwt       string
 	expiresAt time.Time
-	client    *http.Client
+	client    tls_client.HttpClient
 }
 
 var mimoAuth = &MimoTokenCache{
-	client: &http.Client{Timeout: 15 * time.Second},
+	client: nil,
 }
 
 type ChatMessage struct {
@@ -658,6 +661,8 @@ var modelMap = map[string]string{
 	// Direct Matches & Aliases
 	"ox-alpha":                "x-preview-f-free",
 	"muse-spark":              "laguna-s-2.1-free",
+	"muse-spark-1.3":          "muse-spark-1.3-contributor-free",
+	"muse-spark-1.3-contributor-free": "muse-spark-1.3-contributor-free",
 	"kimi-k3":                 "moonshotai/kimi-k3",
 	"moonshotai/kimi-k3":      "moonshotai/kimi-k3",
 	"kimi-k2.6":               "moonshotai/kimi-k3-free",
@@ -706,7 +711,7 @@ func getUpstreamConfig(targetModel string) (string, string) {
 
 	endpoint := "chat/completions"
 	mid := strings.Split(targetModel, ":")[0]
-	
+
 	anthropicNative := map[string]bool{
 		"union-alpha": true, "claude-3-5-haiku": true, "claude-haiku-4-5": true,
 		"claude-fable-5": true, "claude-fable-5-1": true, "claude-opus-4-1": true,
@@ -721,7 +726,7 @@ func getUpstreamConfig(targetModel string) (string, string) {
 		"muse-spark-1.2": true, "muse-spark-1.2-contributor-free": true,
 		"muse-spark-1.3": true, "muse-spark-1.3-contributor-free": true,
 		"big-pickle": true,
-		"kimi-k3": true, "kimi-k2.6": true, "kimi-k2.5": true,
+		"kimi-k3":    true, "kimi-k2.6": true, "kimi-k2.5": true,
 		"gemini-3.8-flash": true, "gemini-3.7-flash": true, "gemini-3.5-flash": true,
 		"gemini-3.5-flash-lite": true, "gemini-3.1-pro": true, "gemini-3.6-flash": true,
 		"qwen3.8-max": true, "qwen3.8-flash": true,
@@ -737,7 +742,6 @@ func getUpstreamConfig(targetModel string) (string, string) {
 
 	return "https://opencode.ai/zen/v1/" + endpoint, ""
 }
-
 
 var knownOpencodeSessions = []string{
 	"ses_f1ca452fdffe1IvfaQCvkIzXHe",
@@ -769,17 +773,17 @@ func generateRequestID() string {
 	return "req_" + hex.EncodeToString(b)
 }
 
+var sharedDirectClient tls_client.HttpClient
 
-var sharedDirectClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:        200,
-		MaxIdleConnsPerHost: 50,
-		IdleConnTimeout:     90 * time.Second,
-	},
+func init() {
+	options := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithClientProfile(profiles.Chrome_131),
+	}
+	sharedDirectClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), options...)
 }
 
-func newTorClient() *http.Client {
+func newTorClient() tls_client.HttpClient {
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
@@ -788,20 +792,13 @@ func newTorClient() *http.Client {
 		proxyURLStr = "socks5://127.0.0.1:9050"
 	}
 
-	proxyURL, err := url.Parse(proxyURLStr)
-	if err == nil {
-		tr := &http.Transport{
-			Proxy:             http.ProxyURL(proxyURL),
-			DisableKeepAlives: true,
-			MaxIdleConns:      -1,
-			IdleConnTimeout:   1 * time.Second,
-		}
-		return &http.Client{
-			Transport: tr,
-			Timeout:   35 * time.Second,
-		}
+	options := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(35),
+		tls_client.WithClientProfile(profiles.Chrome_131),
+		tls_client.WithProxyUrl(proxyURLStr),
 	}
-	return sharedDirectClient
+	client, _ := tls_client.NewHttpClient(tls_client.NewLogger(), options...)
+	return client
 }
 
 // newStreamClient returns an HTTP client suitable for long-lived SSE streams:
@@ -1331,14 +1328,14 @@ func (m *MimoTokenCache) GetJWT() (string, error) {
 	bootPayload := map[string]string{"client": mimoClientHash}
 	payloadBytes, _ := json.Marshal(bootPayload)
 
-	req, err := http.NewRequest(http.MethodPost, mimoBootstrapURL, bytes.NewBuffer(payloadBytes))
+	req, err := fhttp.NewRequest(http.MethodPost, mimoBootstrapURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "mimocode/0.1.0")
 
-	resp, err := m.client.Do(req)
+	resp, err := sharedDirectClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -1435,7 +1432,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		newBody, _ := json.Marshal(tempPayload)
 
 		client := newTorClient()
-		upstreamReq, err := http.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
+		upstreamReq, err := fhttp.NewRequest(http.MethodPost, mimoChatURL, bytes.NewBuffer(newBody))
 		if err != nil {
 			http.Error(w, `{"error":"Internal request formatting failure"}`, http.StatusInternalServerError)
 			return
@@ -1498,7 +1495,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqClient := newTorClient()
-	var resp *http.Response
+	var resp *fhttp.Response
 	var errDo error
 
 	var targetModels = []string{targetModel}
@@ -1556,9 +1553,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		for attempt := 0; attempt < 3; attempt++ {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 
-			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
 			upstreamReq.Header.Set("Content-Type", "application/json")
-			
+
 			if strings.Contains(currentTargetURL, "opencode.ai") {
 				upstreamReq.Header.Set("Authorization", "Bearer public")
 				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
@@ -1569,7 +1566,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
-				
+
 				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
 					upstreamReq.Header.Set("x-opencode-session", reqSession)
 				}
@@ -1606,7 +1603,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if resp != nil {
 					resp.Body.Close()
 				}
-				directReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+				directReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
 				directReq.Header = upstreamReq.Header.Clone()
 				respDirect, errDirect := sharedDirectClient.Do(directReq)
 				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
@@ -2053,7 +2050,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		targetModels = append(targetModels, "nemotron-3.5-lightning-free", "x-preview-f-free")
 	}
 
-	var resp *http.Response
+	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
 
@@ -2075,12 +2072,12 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				promptCacheKey = generateSessionID()
 			}
 			responsesReq := map[string]interface{}{
-				"model":       currentTarget,
-				"input":       responsesInput,
-				"temperature": 0.1,
-				"stream":      true,
-				"reasoning":   map[string]string{"effort": "high"},
-				"store":       false,
+				"model":            currentTarget,
+				"input":            responsesInput,
+				"temperature":      0.1,
+				"stream":           true,
+				"reasoning":        map[string]string{"effort": "high"},
+				"store":            false,
 				"prompt_cache_key": promptCacheKey,
 			}
 			currentPayloadBytes, _ = json.Marshal(responsesReq)
@@ -2097,9 +2094,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		for attempt := 0; attempt < 3; attempt++ {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 
-			upstreamReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 			upstreamReq.Header.Set("Content-Type", "application/json")
-			
+
 			if strings.Contains(currentTargetURL, "opencode.ai") {
 				upstreamReq.Header.Set("Authorization", "Bearer public")
 				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
@@ -2110,7 +2107,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
-				
+
 				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
 					upstreamReq.Header.Set("x-opencode-session", reqSession)
 				}
@@ -2147,7 +2144,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				if resp != nil {
 					resp.Body.Close()
 				}
-				directReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+				directReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 				directReq.Header = upstreamReq.Header.Clone()
 				respDirect, errDirect := sharedDirectClient.Do(directReq)
 				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
