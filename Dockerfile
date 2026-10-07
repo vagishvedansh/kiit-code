@@ -1,19 +1,13 @@
-FROM golang:1.22-alpine AS builder
+FROM python:3.11-alpine
+
+RUN apk add --no-cache ca-certificates tor build-base libffi-dev openssl-dev
 
 WORKDIR /app
-COPY go.mod ./
-RUN go mod download
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server .
-
-FROM alpine:3.19
-
-RUN apk add --no-cache ca-certificates tor
-
-WORKDIR /app
-COPY --from=builder /server /app/server
-COPY --from=builder /app/prompts /app/prompts
+COPY genuine_sessions.txt ./
+COPY tor-zen-proxy.py ./
 
 EXPOSE 8787
 
@@ -21,4 +15,4 @@ RUN echo "ControlPort 9051" > /etc/tor/torrc && \
     echo "SOCKSPort 9050" >> /etc/tor/torrc && \
     echo "CookieAuthentication 0" >> /etc/tor/torrc
 
-CMD tor & /app/server
+CMD tor & python tor-zen-proxy.py --port 8787 --socks 127.0.0.1:9050 --control 127.0.0.1:9051
