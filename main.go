@@ -1510,7 +1510,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			
 			if strings.Contains(currentTargetURL, "opencode.ai") {
 				upstreamReq.Header.Set("Authorization", "Bearer public")
-				upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
+					upstreamReq.Header.Set("User-Agent", clientUA)
+				} else {
+					upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				}
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
@@ -2006,7 +2010,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			
 			if strings.Contains(currentTargetURL, "opencode.ai") {
 				upstreamReq.Header.Set("Authorization", "Bearer public")
-				upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
+					upstreamReq.Header.Set("User-Agent", clientUA)
+				} else {
+					upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+				}
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
