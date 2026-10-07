@@ -660,6 +660,7 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// Direct Matches & Aliases
+	"simulated-rescue-model":          "muse-spark-1.3-contributor-free",
 	"ox-alpha":                        "x-preview-f-free",
 	"ox-alpha-free":                   "x-preview-f-free",
 	"x-preview-f-free":                "x-preview-f-free",
@@ -670,39 +671,39 @@ var modelMap = map[string]string{
 	"moonshotai/kimi-k3":              "moonshotai/kimi-k3",
 	"kimi-k2.6":                       "moonshotai/kimi-k3-free",
 	"deepseek-v4-flash":               "laguna-s-2.1-free",
-	"nemotron-3-ultra":                "nemotron-3.5-lightning-free",
-	"nemotron-3.5-lightning-free":     "nemotron-3.5-lightning-free",
-	"nvidia-nemotron-3-ultra":         "nemotron-3.5-lightning-free",
-	"ling-3.0-flash":                  "nemotron-3.5-lightning-free",
+	"nemotron-3-ultra":                "muse-spark-1.3-contributor-free",
+	"nemotron-3.5-lightning-free":     "muse-spark-1.3-contributor-free",
+	"nvidia-nemotron-3-ultra":         "muse-spark-1.3-contributor-free",
+	"ling-3.0-flash":                  "muse-spark-1.3-contributor-free",
 	"laguna-s-2.1":                    "laguna-s-2.1-free",
 	"laguna-s-2.1-free":               "laguna-s-2.1-free",
 	"mimo-v2.5":                       "laguna-s-2.1-free",
-	"qwen-3.8-max":                    "nemotron-3.5-lightning-free",
+	"qwen-3.8-max":                    "muse-spark-1.3-contributor-free",
 
 	// OpenAI Series
-	"gpt-4o":        "nemotron-3.5-lightning-free",
-	"gpt-4o-mini":   "nemotron-3.5-lightning-free",
-	"gpt-4":         "nemotron-3.5-lightning-free",
-	"gpt-4.1-mini":  "nemotron-3.5-lightning-free",
-	"gpt-3.5-turbo": "laguna-s-2.1-free",
+	"gpt-4o":        "muse-spark-1.3-contributor-free",
+	"gpt-4o-mini":   "muse-spark-1.3-contributor-free",
+	"gpt-4":         "muse-spark-1.3-contributor-free",
+	"gpt-4.1-mini":  "muse-spark-1.3-contributor-free",
+	"gpt-3.5-turbo": "muse-spark-1.3-contributor-free",
 
 	// Anthropic Series
-	"claude-3-7-sonnet-20250219": "nemotron-3.5-lightning-free",
-	"claude-3-5-sonnet-20241022": "nemotron-3.5-lightning-free",
-	"claude-3-5-haiku-20241022":  "nemotron-3.5-lightning-free",
-	"claude-opus-5":              "nemotron-3.5-lightning-free",
-	"claude-3-opus-20240229":     "nemotron-3.5-lightning-free",
-	"claude-3-haiku-20240307":    "nemotron-3.5-lightning-free",
-	"claude-3-sonnet-20240229":   "nemotron-3.5-lightning-free",
-	"claude-sonnet-4":            "nemotron-3.5-lightning-free",
+	"claude-3-7-sonnet-20250219": "muse-spark-1.3-contributor-free",
+	"claude-3-5-sonnet-20241022": "muse-spark-1.3-contributor-free",
+	"claude-3-5-haiku-20241022":  "muse-spark-1.3-contributor-free",
+	"claude-opus-5":              "muse-spark-1.3-contributor-free",
+	"claude-3-opus-20240229":     "muse-spark-1.3-contributor-free",
+	"claude-3-haiku-20240307":    "muse-spark-1.3-contributor-free",
+	"claude-3-sonnet-20240229":   "muse-spark-1.3-contributor-free",
+	"claude-sonnet-4":            "muse-spark-1.3-contributor-free",
 
 	// Reasoning, Code & Specialist
-	"deepseek-r1":      "nemotron-3.5-lightning-free",
-	"deepseek-r1-free": "nemotron-3.5-lightning-free",
-	"deepseek-pro":     "nemotron-3.5-lightning-free",
-	"deepseek-v3":      "nemotron-3.5-lightning-free",
-	"qwen-2.5-coder":   "nemotron-3.5-lightning-free",
-	"qwen-3.6-coder":   "nemotron-3.5-lightning-free",
+	"deepseek-r1":      "muse-spark-1.3-contributor-free",
+	"deepseek-r1-free": "muse-spark-1.3-contributor-free",
+	"deepseek-pro":     "muse-spark-1.3-contributor-free",
+	"deepseek-v3":      "muse-spark-1.3-contributor-free",
+	"qwen-2.5-coder":   "muse-spark-1.3-contributor-free",
+	"qwen-3.6-coder":   "muse-spark-1.3-contributor-free",
 	"minimax-m2.7":     "laguna-s-2.1-free",
 }
 
@@ -1764,11 +1765,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			if resp != nil {
 				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
+				code := resp.StatusCode
 				resp.Body.Close()
+				cancel()
+				if code == 429 || code == 404 || code == 503 || code == 403 {
+					break
+				}
 			} else {
 				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
+				cancel()
 			}
-			cancel()
 			if attempt > 0 {
 				tryRotateIP()
 			}
@@ -2366,11 +2372,16 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 			if resp != nil {
 				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
+				code := resp.StatusCode
 				resp.Body.Close()
+				cancel()
+				if code == 429 || code == 404 || code == 503 || code == 403 {
+					break
+				}
 			} else {
 				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
+				cancel()
 			}
-			cancel()
 			if attempt > 0 {
 				tryRotateIP()
 			}
@@ -2398,6 +2409,91 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	msgID := generateAnthropicID()
 
+	if payload.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
+			return
+		}
+
+		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":1}}}\n\n", msgID, returnModel, promptLen)
+		w.Write([]byte(startMsgEvent))
+		flusher.Flush()
+
+		textIdx := 0
+		w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
+		flusher.Flush()
+
+		reader := bufio.NewReader(resp.Body)
+		outTokenCount := 0
+
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				trimmed := bytes.TrimSpace(line)
+				if bytes.HasPrefix(trimmed, []byte("data: ")) {
+					payloadBytes := bytes.TrimPrefix(trimmed, []byte("data: "))
+					if string(payloadBytes) == "[DONE]" {
+						break
+					}
+					var j map[string]interface{}
+					if err := json.Unmarshal(payloadBytes, &j); err == nil {
+						var textDelta string
+						if t, ok := j["type"].(string); ok {
+							if t == "response.output_text.delta" {
+								textDelta, _ = j["delta"].(string)
+							} else if t == "response.content_part.delta" {
+								if dMap, ok := j["delta"].(map[string]interface{}); ok {
+									textDelta, _ = dMap["text"].(string)
+								}
+							}
+						} else if choices, ok := j["choices"].([]interface{}); ok && len(choices) > 0 {
+							if choiceMap, ok := choices[0].(map[string]interface{}); ok {
+								if deltaMap, ok := choiceMap["delta"].(map[string]interface{}); ok {
+									if content, ok := deltaMap["content"].(string); ok {
+										textDelta = content
+									}
+								}
+							}
+						}
+						if textDelta != "" {
+							textDelta = cleanOutputText(textDelta, virtualModel)
+							outTokenCount += estimateTokens(textDelta)
+							deltaBytes, _ := json.Marshal(map[string]interface{}{
+								"type":  "content_block_delta",
+								"index": textIdx,
+								"delta": map[string]interface{}{
+									"type": "text_delta",
+									"text": textDelta,
+								},
+							})
+							w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+							flusher.Flush()
+						}
+					}
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+
+		w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
+		flusher.Flush()
+
+		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outTokenCount)
+		w.Write([]byte(msgDeltaEvent))
+
+		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		w.Write([]byte(msgStopEvent))
+		flusher.Flush()
+		return
+	}
+
 	respBody, _ := io.ReadAll(resp.Body)
 
 	// Robust extraction: tolerate string / array / null content and fall back to
@@ -2418,56 +2514,6 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			outTokenCount = estimateTokens(extractedText)
 			stopReason = "max_tokens"
 		}
-	}
-
-	if payload.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
-			return
-		}
-
-		startMsgEvent := fmt.Sprintf("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":%d,\"output_tokens\":1}}}\n\n", msgID, returnModel, promptLen)
-		w.Write([]byte(startMsgEvent))
-		flusher.Flush()
-
-		textIdx := 0
-		w.Write([]byte(fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n", textIdx)))
-		flusher.Flush()
-
-		wordSpaceRegex := regexp.MustCompile(`\S+\s*|\s+`)
-		parts := wordSpaceRegex.FindAllString(extractedText, -1)
-		for _, p := range parts {
-			if p == "" {
-				continue
-			}
-			deltaBytes, _ := json.Marshal(map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": textIdx,
-				"delta": map[string]interface{}{
-					"type": "text_delta",
-					"text": p,
-				},
-			})
-			w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
-			flusher.Flush()
-			time.Sleep(12 * time.Millisecond)
-		}
-
-		w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
-		flusher.Flush()
-
-		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", stopReason, outTokenCount)
-		w.Write([]byte(msgDeltaEvent))
-
-		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
-		w.Write([]byte(msgStopEvent))
-		flusher.Flush()
-		return
 	}
 
 	anthropicResp := map[string]interface{}{

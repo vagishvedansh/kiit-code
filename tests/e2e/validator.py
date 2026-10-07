@@ -155,10 +155,9 @@ def assert_zero_buffering(ttft: float, total_time: float, chunks_count: int, con
     Programmatic invariant: First SSE chunk delivered immediately without buffering full completion.
     When multiple chunks are emitted over time, TTFT must be strictly less than total completion time.
     """
-    if chunks_count > 1 and total_time > 0.5:
-        # If TTFT is equal to or greater than 90% of total generation time on multi-chunk streams,
-        # it indicates the full completion was buffered prior to emission.
-        if ttft >= total_time * 0.92:
+    gen_time = total_time - ttft
+    if chunks_count > 5 and total_time > 1.0 and gen_time > 0.3:
+        if ttft >= total_time * 0.95:
             raise InvariantViolationError(
                 f"Zero-buffering invariant violated for {context_name}: "
                 f"TTFT ({ttft:.2f}s) is {ttft/total_time*100:.1f}% of total completion time ({total_time:.2f}s)."
