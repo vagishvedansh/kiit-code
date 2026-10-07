@@ -660,20 +660,24 @@ type ChatResponse struct {
 
 var modelMap = map[string]string{
 	// Direct Matches & Aliases
-	"ox-alpha":                "x-preview-f-free",
-	"muse-spark":              "laguna-s-2.1-free",
-	"muse-spark-1.3":          "muse-spark-1.3-contributor-free",
+	"ox-alpha":                        "x-preview-f-free",
+	"ox-alpha-free":                   "x-preview-f-free",
+	"x-preview-f-free":                "x-preview-f-free",
+	"muse-spark":                      "muse-spark-1.3-contributor-free",
+	"muse-spark-1.3":                  "muse-spark-1.3-contributor-free",
 	"muse-spark-1.3-contributor-free": "muse-spark-1.3-contributor-free",
-	"kimi-k3":                 "moonshotai/kimi-k3",
-	"moonshotai/kimi-k3":      "moonshotai/kimi-k3",
-	"kimi-k2.6":               "moonshotai/kimi-k3-free",
-	"deepseek-v4-flash":       "laguna-s-2.1-free",
-	"nemotron-3-ultra":        "nemotron-3.5-lightning-free",
-	"nvidia-nemotron-3-ultra": "nemotron-3.5-lightning-free",
-	"ling-3.0-flash":          "nemotron-3.5-lightning-free",
-	"laguna-s-2.1":            "laguna-s-2.1-free",
-	"mimo-v2.5":               "laguna-s-2.1-free",
-	"qwen-3.8-max":            "nemotron-3.5-lightning-free",
+	"kimi-k3":                         "moonshotai/kimi-k3",
+	"moonshotai/kimi-k3":              "moonshotai/kimi-k3",
+	"kimi-k2.6":                       "moonshotai/kimi-k3-free",
+	"deepseek-v4-flash":               "laguna-s-2.1-free",
+	"nemotron-3-ultra":                "nemotron-3.5-lightning-free",
+	"nemotron-3.5-lightning-free":     "nemotron-3.5-lightning-free",
+	"nvidia-nemotron-3-ultra":         "nemotron-3.5-lightning-free",
+	"ling-3.0-flash":                  "nemotron-3.5-lightning-free",
+	"laguna-s-2.1":                    "laguna-s-2.1-free",
+	"laguna-s-2.1-free":               "laguna-s-2.1-free",
+	"mimo-v2.5":                       "laguna-s-2.1-free",
+	"qwen-3.8-max":                    "nemotron-3.5-lightning-free",
 
 	// OpenAI Series
 	"gpt-4o":        "nemotron-3.5-lightning-free",
@@ -761,19 +765,72 @@ var knownOpencodeSessions = []string{
 	"ses_f0ec8ca98ffeN8M5uR0mB4L3vP",
 }
 
+func genOpenCodeID(descending bool) string {
+	nowMs := time.Now().UnixMilli()
+	counter := int64(1)
+	val := (nowMs * 0x1000) + counter
+	if descending {
+		val = ^val
+	}
+	val48 := val & 0xffffffffffff
+	hexPrefix := fmt.Sprintf("%012x", val48)
+
+	b := make([]byte, 14)
+	rand.Read(b)
+	suffix := make([]byte, 14)
+	for i := 0; i < 14; i++ {
+		suffix[i] = base62Chars[int(b[i])%len(base62Chars)]
+	}
+	return hexPrefix + string(suffix)
+}
+
 func generateSessionID() string {
 	b := make([]byte, 1)
 	rand.Read(b)
-	idx := int(b[0]) % len(knownOpencodeSessions)
-	return knownOpencodeSessions[idx]
+	if int(b[0])%2 == 0 && len(knownOpencodeSessions) > 0 {
+		idx := int(b[0]) % len(knownOpencodeSessions)
+		return knownOpencodeSessions[idx]
+	}
+	return "ses_" + genOpenCodeID(true)
 }
 
 func generateRequestID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return "req_" + hex.EncodeToString(b)
+	return "msg_" + genOpenCodeID(false)
 }
 
+func isValidOpenCodeSession(s string) bool {
+	if !strings.HasPrefix(s, "ses_") && !strings.HasPrefix(s, "msg_") {
+		return false
+	}
+	return len(s) >= 20
+}
+
+func getValidSessionID(clientSession string) string {
+	if isValidOpenCodeSession(clientSession) {
+		return clientSession
+	}
+	return generateSessionID()
+}
+
+func getCandidateModels(primaryTarget string) []string {
+	fallbacks := []string{
+		primaryTarget,
+		"muse-spark-1.3-contributor-free",
+		"x-preview-f-free",
+		"laguna-s-2.1-free",
+		"nemotron-3.5-lightning-free",
+	}
+	seen := make(map[string]bool)
+	var candidates []string
+	for _, m := range fallbacks {
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		candidates = append(candidates, m)
+	}
+	return candidates
+}
 
 var (
 	sharedDirectClient tls_client.HttpClient
@@ -809,12 +866,41 @@ var openCodeCoreTools = []map[string]interface{}{
 	},
 }
 
+func getIsolatedTorProxyURL() string {
+	base := os.Getenv("TOR_PROXY_URL")
+	if base == "" {
+		base = os.Getenv("PROXY_URL")
+	}
+	if base == "" {
+		base = "socks5://127.0.0.1:9050"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	randBytes := make([]byte, 8)
+	rand.Read(randBytes)
+	circuitID := fmt.Sprintf("tor_%d_%s", time.Now().UnixNano(), hex.EncodeToString(randBytes))
+	u.User = url.UserPassword(circuitID, "isolate")
+	return u.String()
+}
+
+func newIsolatedTorClient() (tls_client.HttpClient, error) {
+	proxyURL := getIsolatedTorProxyURL()
+	opts := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(300),
+		tls_client.WithClientProfile(profiles.Chrome_131),
+		tls_client.WithProxyUrl(proxyURL),
+	}
+	return tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
+}
+
 func init() {
 	optionsDirect := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(45),
+		tls_client.WithTimeoutSeconds(300),
 		tls_client.WithClientProfile(profiles.Chrome_131),
 	}
-	sharedDirectClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), optionsDirect...)
+	sharedDirectClient, _ = tls_client.NewHttpClient(tls_client.NewNoopLogger(), optionsDirect...)
 
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
@@ -824,14 +910,17 @@ func init() {
 		proxyURLStr = "socks5://127.0.0.1:9050"
 	}
 	optionsTor := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(45),
+		tls_client.WithTimeoutSeconds(300),
 		tls_client.WithClientProfile(profiles.Chrome_131),
 		tls_client.WithProxyUrl(proxyURLStr),
 	}
-	sharedTorClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), optionsTor...)
+	sharedTorClient, _ = tls_client.NewHttpClient(tls_client.NewNoopLogger(), optionsTor...)
 }
 
 func newTorClient() tls_client.HttpClient {
+	if client, err := newIsolatedTorClient(); err == nil && client != nil {
+		return client
+	}
 	if sharedTorClient != nil {
 		return sharedTorClient
 	}
@@ -872,6 +961,13 @@ func tryRotateIP() {
 	rotateLock.Lock()
 	defer rotateLock.Unlock()
 
+	if sharedTorClient != nil {
+		sharedTorClient.CloseIdleConnections()
+	}
+	if sharedDirectClient != nil {
+		sharedDirectClient.CloseIdleConnections()
+	}
+
 	if time.Since(lastRotateTime) < 2200*time.Millisecond {
 		time.Sleep(500 * time.Millisecond)
 		return
@@ -898,7 +994,10 @@ func tryRotateIP() {
 }
 
 func renewTorIP(controlAddr, controlPassword string) error {
-	conn, err := net.DialTimeout("tcp", controlAddr, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", controlAddr, 1500*time.Millisecond)
+	if err != nil && controlAddr == "127.0.0.1:9051" {
+		conn, err = net.DialTimeout("tcp", "127.0.0.1:9151", 1500*time.Millisecond)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to connect to Tor control port: %v", err)
 	}
@@ -1523,75 +1622,84 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tempPayload map[string]interface{}
-	json.Unmarshal(bodyBytes, &tempPayload)
-	delete(tempPayload, "stream")
-	tempPayload["stream"] = true
-	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
-		tempPayload["temperature"] = 0.1
+	var basePayload map[string]interface{}
+	json.Unmarshal(bodyBytes, &basePayload)
+	if basePayload == nil {
+		basePayload = make(map[string]interface{})
 	}
+	baseTemp := 0.1
+	if t, ok := basePayload["temperature"].(float64); ok {
+		baseTemp = t
+	}
+	baseMessages, _ := basePayload["messages"].([]interface{})
 
 	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
 
-	var targetModels = []string{targetModel}
-	if targetModel != "nemotron-3.5-lightning-free" && targetModel != "x-preview-f-free" {
-		targetModels = append(targetModels, "nemotron-3.5-lightning-free", "x-preview-f-free")
-	}
+	targetModels := getCandidateModels(targetModel)
 
 	for _, currentTarget := range targetModels {
 		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
-		tempPayload["model"] = currentTarget
+
+		currentPayload := make(map[string]interface{})
+		currentPayload["model"] = currentTarget
+		currentPayload["stream"] = true
+		currentPayload["temperature"] = baseTemp
+		if topP, ok := basePayload["top_p"]; ok {
+			currentPayload["top_p"] = topP
+		}
+
+		sessionID := getValidSessionID(r.Header.Get("X-Opencode-Session"))
+		requestID := r.Header.Get("X-Opencode-Request")
+		if !strings.HasPrefix(requestID, "msg_") || len(requestID) < 20 {
+			requestID = generateRequestID()
+		}
+
 		if strings.HasSuffix(currentTargetURL, "/responses") {
-			if msgs, ok := tempPayload["messages"].([]interface{}); ok {
-				inputs := make([]map[string]interface{}, 0, len(msgs))
-				for _, m := range msgs {
-					if mMap, ok := m.(map[string]interface{}); ok {
-						role := "user"
-						if r, ok := mMap["role"].(string); ok {
-							role = r
-						}
-						inputs = append(inputs, map[string]interface{}{
-							"role":    role,
-							"content": mMap["content"],
-						})
+			inputs := make([]map[string]interface{}, 0, len(baseMessages))
+			for _, m := range baseMessages {
+				if mMap, ok := m.(map[string]interface{}); ok {
+					role := "user"
+					if rStr, ok := mMap["role"].(string); ok {
+						role = rStr
 					}
+					inputs = append(inputs, map[string]interface{}{
+						"role":    role,
+						"content": mMap["content"],
+					})
 				}
-				tempPayload["input"] = inputs
-				delete(tempPayload, "messages")
 			}
-			tempPayload["reasoning"] = map[string]string{"effort": "high", "summary": "auto"}
-			tempPayload["store"] = false
-			tempPayload["tools"] = openCodeCoreTools
-			if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
-				tempPayload["prompt_cache_key"] = reqSession
-			} else {
-				tempPayload["prompt_cache_key"] = generateSessionID()
+			currentPayload["input"] = inputs
+			currentPayload["store"] = false
+			currentPayload["tools"] = openCodeCoreTools
+			currentPayload["prompt_cache_key"] = sessionID
+
+			effort := "minimal"
+			if re, ok := basePayload["reasoning_effort"].(string); ok && (re == "low" || re == "medium" || re == "high") {
+				effort = re
+			}
+			currentPayload["reasoning"] = map[string]string{
+				"effort":  effort,
+				"summary": "auto",
 			}
 		} else {
-			if inputs, ok := tempPayload["input"].([]interface{}); ok {
-				msgs := make([]map[string]interface{}, 0, len(inputs))
-				for _, in := range inputs {
-					if inMap, ok := in.(map[string]interface{}); ok {
-						msgs = append(msgs, map[string]interface{}{
-							"role":    inMap["role"],
-							"content": inMap["content"],
-						})
-					}
-				}
-				tempPayload["messages"] = msgs
-				delete(tempPayload, "input")
-				delete(tempPayload, "reasoning")
+			currentPayload["messages"] = baseMessages
+			if strings.Contains(currentTargetURL, "opencode.ai") {
+				currentPayload["tools"] = openCodeCoreTools
 			}
 		}
 
-		currentBody, _ := json.Marshal(tempPayload)
+		currentBody, _ := json.Marshal(currentPayload)
 
 		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 
-			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+			upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+			if errReq != nil {
+				cancel()
+				continue
+			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 
 			if strings.Contains(currentTargetURL, "opencode.ai") {
@@ -1604,19 +1712,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
+				upstreamReq.Header.Set("x-opencode-session", sessionID)
+				upstreamReq.Header.Set("x-opencode-request", requestID)
 
-				reqSession := r.Header.Get("X-Opencode-Session")
-				if reqSession == "" {
-					reqSession = generateSessionID()
-				}
-				upstreamReq.Header.Set("x-opencode-session", reqSession)
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
-				}
-				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
-					upstreamReq.Header.Set("x-opencode-request", reqReq)
-				} else {
-					upstreamReq.Header.Set("x-opencode-request", generateRequestID())
 				}
 			} else {
 				if currentTargetAuth != "" {
@@ -1630,17 +1730,31 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			upstreamReq.Header.Del("CF-Connecting-IP")
 
 			var useClient tls_client.HttpClient
+			var clientToClose tls_client.HttpClient
 			if attempt == 0 {
 				useClient = sharedDirectClient
 			} else {
-				useClient = sharedTorClient
-				torSem <- struct{}{}
+				torClient, errTor := newIsolatedTorClient()
+				if errTor == nil && torClient != nil {
+					useClient = torClient
+					clientToClose = torClient
+				} else {
+					useClient = sharedTorClient
+				}
 			}
 
-			resp, errDo = useClient.Do(upstreamReq)
+			doReq := func() (*fhttp.Response, error) {
+				if attempt > 0 {
+					torSem <- struct{}{}
+					defer func() { <-torSem }()
+				}
+				return useClient.Do(upstreamReq)
+			}
 
-			if attempt > 0 {
-				<-torSem
+			resp, errDo = doReq()
+
+			if clientToClose != nil && (errDo != nil || resp == nil || resp.StatusCode != http.StatusOK) {
+				clientToClose.CloseIdleConnections()
 			}
 
 			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
@@ -1663,6 +1777,10 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			break
 		}
+	}
+
+	if cancelFunc != nil {
+		defer cancelFunc()
 	}
 
 	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
@@ -1901,6 +2019,12 @@ func extractSSEText(respBody []byte) string {
 					if delta, ok := j["delta"].(string); ok {
 						contentBuilder += delta
 					}
+				} else if t == "response.content_part.delta" {
+					if dMap, ok := j["delta"].(map[string]interface{}); ok {
+						if text, ok := dMap["text"].(string); ok {
+							contentBuilder += text
+						}
+					}
 				} else if t == "content_block_delta" {
 					if delta, ok := j["delta"].(map[string]interface{}); ok {
 						if text, ok := delta["text"].(string); ok {
@@ -2118,19 +2242,22 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
-	var targetModels = []string{targetModel}
-	if targetModel != "nemotron-3.5-lightning-free" && targetModel != "x-preview-f-free" {
-		targetModels = append(targetModels, "nemotron-3.5-lightning-free", "x-preview-f-free")
-	}
+	targetModels := getCandidateModels(targetModel)
 
 	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
 
-
 	for _, currentTarget := range targetModels {
 		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
 		var currentPayloadBytes []byte
+
+		sessionID := getValidSessionID(r.Header.Get("X-Opencode-Session"))
+		requestID := r.Header.Get("X-Opencode-Request")
+		if !strings.HasPrefix(requestID, "msg_") || len(requestID) < 20 {
+			requestID = generateRequestID()
+		}
+
 		if strings.HasSuffix(currentTargetURL, "/responses") {
 			responsesInput := make([]map[string]interface{}, 0, len(openAIMessages))
 			for _, m := range openAIMessages {
@@ -2139,19 +2266,19 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					"content": m.Content,
 				})
 			}
-			promptCacheKey := r.Header.Get("X-Opencode-Session")
-			if promptCacheKey == "" {
-				promptCacheKey = generateSessionID()
+			effort := "minimal"
+			if thinkingRequested(payload.Thinking) {
+				effort = "medium"
 			}
 			responsesReq := map[string]interface{}{
 				"model":            currentTarget,
 				"input":            responsesInput,
 				"temperature":      0.1,
 				"stream":           true,
-				"reasoning":        map[string]string{"effort": "high", "summary": "auto"},
+				"reasoning":        map[string]string{"effort": effort, "summary": "auto"},
 				"store":            false,
 				"tools":            openCodeCoreTools,
-				"prompt_cache_key": promptCacheKey,
+				"prompt_cache_key": sessionID,
 			}
 			currentPayloadBytes, _ = json.Marshal(responsesReq)
 		} else {
@@ -2161,13 +2288,20 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"temperature": 0.1,
 				"stream":      true,
 			}
+			if strings.Contains(currentTargetURL, "opencode.ai") {
+				openAIReq["tools"] = openCodeCoreTools
+			}
 			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
 
 		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 
-			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+			upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+			if errReq != nil {
+				cancel()
+				continue
+			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 
 			if strings.Contains(currentTargetURL, "opencode.ai") {
@@ -2180,19 +2314,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-client", "cli")
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
+				upstreamReq.Header.Set("x-opencode-session", sessionID)
+				upstreamReq.Header.Set("x-opencode-request", requestID)
 
-				reqSession := r.Header.Get("X-Opencode-Session")
-				if reqSession == "" {
-					reqSession = generateSessionID()
-				}
-				upstreamReq.Header.Set("x-opencode-session", reqSession)
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
-				}
-				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
-					upstreamReq.Header.Set("x-opencode-request", reqReq)
-				} else {
-					upstreamReq.Header.Set("x-opencode-request", generateRequestID())
 				}
 			} else {
 				if currentTargetAuth != "" {
@@ -2206,17 +2332,31 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			upstreamReq.Header.Del("CF-Connecting-IP")
 
 			var useClient tls_client.HttpClient
+			var clientToClose tls_client.HttpClient
 			if attempt == 0 {
 				useClient = sharedDirectClient
 			} else {
-				useClient = sharedTorClient
-				torSem <- struct{}{}
+				torClient, errTor := newIsolatedTorClient()
+				if errTor == nil && torClient != nil {
+					useClient = torClient
+					clientToClose = torClient
+				} else {
+					useClient = sharedTorClient
+				}
 			}
 
-			resp, errDo = useClient.Do(upstreamReq)
+			doReq := func() (*fhttp.Response, error) {
+				if attempt > 0 {
+					torSem <- struct{}{}
+					defer func() { <-torSem }()
+				}
+				return useClient.Do(upstreamReq)
+			}
 
-			if attempt > 0 {
-				<-torSem
+			resp, errDo = doReq()
+
+			if clientToClose != nil && (errDo != nil || resp == nil || resp.StatusCode != http.StatusOK) {
+				clientToClose.CloseIdleConnections()
 			}
 
 			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
@@ -2235,8 +2375,6 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				tryRotateIP()
 			}
 		}
-
-
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			break

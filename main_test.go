@@ -146,3 +146,100 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestGenerateRequestID(t *testing.T) {
+	id1 := generateRequestID()
+	id2 := generateRequestID()
+
+	if !regexp.MustCompile(`^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(id1) {
+		t.Errorf("generateRequestID() format mismatch: %q", id1)
+	}
+	if id1 == id2 {
+		t.Errorf("expected consecutive request IDs to be unique: %q == %q", id1, id2)
+	}
+}
+
+func TestGenerateSessionID(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		sess := generateSessionID()
+		if !isValidOpenCodeSession(sess) {
+			t.Errorf("generateSessionID() produced invalid session: %q", sess)
+		}
+	}
+}
+
+func TestIsValidOpenCodeSession(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"random-uuid-1234", false},
+		{"ses_short", false},
+		{"ses_f1ca452fdffe1IvfaQCvkIzXHe", true},
+		{"msg_f0f66a50bffeB7MDxc270HJi55", true},
+	}
+	for _, c := range cases {
+		if got := isValidOpenCodeSession(c.in); got != c.want {
+			t.Errorf("isValidOpenCodeSession(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestGetCandidateModels_NemotronExclusionFixed(t *testing.T) {
+	// Crucial M2 check: nemotron-3.5-lightning-free must NOT exclude fallbacks
+	candidates := getCandidateModels("nemotron-3.5-lightning-free")
+	if len(candidates) <= 1 {
+		t.Fatalf("expected multiple candidates for nemotron, got %v", candidates)
+	}
+	if candidates[0] != "nemotron-3.5-lightning-free" {
+		t.Errorf("expected primary model first, got %q", candidates[0])
+	}
+
+	foundMuse := false
+	foundPreview := false
+	for _, m := range candidates {
+		if m == "muse-spark-1.3-contributor-free" {
+			foundMuse = true
+		}
+		if m == "x-preview-f-free" {
+			foundPreview = true
+		}
+	}
+	if !foundMuse {
+		t.Errorf("expected candidate chain to include muse-spark-1.3-contributor-free: %v", candidates)
+	}
+	if !foundPreview {
+		t.Errorf("expected candidate chain to include x-preview-f-free: %v", candidates)
+	}
+
+	// Verify deduplication
+	seen := make(map[string]bool)
+	for _, m := range candidates {
+		if seen[m] {
+			t.Errorf("duplicate model %q in candidate chain: %v", m, candidates)
+		}
+		seen[m] = true
+	}
+}
+
+func TestGetIsolatedTorProxyURL(t *testing.T) {
+	u1 := getIsolatedTorProxyURL()
+	u2 := getIsolatedTorProxyURL()
+
+	if u1 == u2 {
+		t.Errorf("expected distinct per-request SOCKS auth credentials, got identical: %q", u1)
+	}
+	if !regexp.MustCompile(`^socks5://tor_\d+_[0-9a-f]+:isolate@.+`).MatchString(u1) {
+		t.Errorf("unexpected isolated proxy URL pattern: %q", u1)
+	}
+}
+
+func TestExtractSSEText_ContentPartDelta(t *testing.T) {
+	raw := []byte("data: {\"type\":\"response.content_part.delta\",\"delta\":{\"text\":\"hello from content part\"}}\n\n")
+	got := extractSSEText(raw)
+	if got != "hello from content part" {
+		t.Errorf("extractSSEText with content_part.delta got %q, want %q", got, "hello from content part")
+	}
+}
+

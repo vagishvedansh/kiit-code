@@ -3,4 +3,8 @@ openclaude_req.json
 kiitcode-proxy
 wave*.json
 *.log
+__pycache__/
+*.pyc
+benchmark_results.json
+.agents/
 

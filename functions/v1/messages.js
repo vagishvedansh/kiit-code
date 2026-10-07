@@ -1,65 +1,32 @@
+import { validateApiKey } from "../_auth.js";
+
 export async function onRequestPost(context) {
-  const { request, env } = context;
+  const { request, env = {} } = context;
 
-  let apiKey = request.headers.get("x-api-key") || "";
-  if (!apiKey) {
-    const authHeader = request.headers.get("Authorization") || "";
-    apiKey = authHeader.replace("Bearer ", "").trim();
-  }
-
-  if (!apiKey) {
+  // 1. Authenticate API Key against D1 with mock table fallback
+  const authResult = await validateApiKey(request, env);
+  if (!authResult.success) {
     return new Response(JSON.stringify({
       type: "error",
-      error: { type: "authentication_error", message: "Missing API Key" }
+      error: { type: authResult.errorType || "authentication_error", message: authResult.message }
     }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" }
+      status: authResult.status,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "anthropic-version": "2023-06-01",
+      }
     });
   }
 
-  let user;
-  try {
-    user = await env.DB.prepare(
-      `SELECT u.credit_balance, k.is_active, k.id as key_id 
-       FROM api_keys k 
-       JOIN users u ON k.user_id = u.id 
-       WHERE k.key_value = ?`
-    ).bind(apiKey).first();
+  const user = authResult.user;
 
-    if (!user || user.is_active !== 1) {
-      return new Response(JSON.stringify({
-        type: "error",
-        error: { type: "authentication_error", message: "Invalid or disabled API Key" }
-      }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
-    if (user.credit_balance <= 0) {
-      return new Response(JSON.stringify({
-        type: "error",
-        error: { type: "invalid_request_error", message: "Credit balance exhausted ($0.00 remaining)." }
-      }), {
-        status: 402,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-  } catch (err) {
-    return new Response(JSON.stringify({
-      type: "error",
-      error: { type: "api_error", message: "Database error during key verification" }
-    }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" }
-    });
-  }
-
-  const backendUrl = `${env.RENDER_BACKEND_URL}/v1/messages`;
+  // 2. Resolve Go backend target
+  const backendBase = env.RENDER_BACKEND_URL || env.BACKEND_URL || "http://127.0.0.1:8080";
+  const backendUrl = `${backendBase}/v1/messages`;
 
   const proxyHeaders = new Headers(request.headers);
-  proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "");
-  proxyHeaders.set("Accept", "application/json");
+  proxyHeaders.set("X-Internal-Secret", env.INTERNAL_SECRET || "kiit_proxy_sec_998877");
   proxyHeaders.set("Content-Type", "application/json");
   proxyHeaders.delete("host");
   proxyHeaders.delete("content-length");
@@ -82,130 +49,24 @@ export async function onRequestPost(context) {
       proxyHeaders.set("X-Model-Name", modelName);
       parsedBody.model = modelName;
       isStream = !!parsedBody.stream;
-      parsedBody.stream = false;
+      // Preserve stream: true for genuine streaming to the Go backend
       bodyToSend = JSON.stringify(parsedBody);
     }
   } catch (_) {}
 
+  if (isStream) {
+    proxyHeaders.set("Accept", "text/event-stream");
+  } else {
+    proxyHeaders.set("Accept", "application/json");
+  }
+
+  // 3. Fetch from backend
+  let renderResponse;
   try {
-    const renderResponse = await fetch(backendUrl, {
+    renderResponse = await fetch(backendUrl, {
       method: "POST",
       headers: proxyHeaders,
       body: bodyToSend,
-    });
-
-    if (!renderResponse.ok) {
-      const errData = await renderResponse.text();
-      return new Response(errData, {
-        status: renderResponse.status,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-
-    const responseData = await renderResponse.json();
-    let extractedText = "";
-    if (responseData.content && Array.isArray(responseData.content)) {
-      for (const item of responseData.content) {
-        if (item.type === "text" && typeof item.text === "string") {
-          extractedText += item.text;
-        }
-      }
-    }
-
-    if (responseData.choices && Array.isArray(responseData.choices)) {
-      for (const choice of responseData.choices) {
-        if (choice.message && typeof choice.message.content === "string") {
-          extractedText += choice.message.content;
-        }
-      }
-      responseData.role = "assistant";
-      responseData.stop_reason = "end_turn";
-      delete responseData.choices;
-    }
-
-    extractedText = sanitizeModelText(extractedText, modelName);
-    responseData.content = [
-      {
-        type: "text",
-        text: extractedText
-      }
-    ];
-
-    if (modelName) {
-      responseData.model = modelName;
-    }
-
-    const usage = responseData.usage || {};
-    const promptTokens = usage.input_tokens || usage.prompt_tokens || 0;
-    const completionTokens = usage.output_tokens || usage.completion_tokens || 0;
-    const totalTokens = promptTokens + completionTokens;
-
-    context.waitUntil(
-      (async () => {
-        try {
-          const costPer1k = 0.0015;
-          const cost = (totalTokens / 1000) * costPer1k;
-          const logId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-
-          await env.DB.prepare(
-            `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
-          ).bind(cost, user.key_id).run();
-
-          await env.DB.prepare(
-            `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
-          ).bind(logId, user.key_id, responseData.model || "claude-3-5-sonnet-20241022", promptTokens, completionTokens, cost).run();
-        } catch (e) {
-          console.error("Failed to log usage or update credit balance:", e);
-        }
-      })()
-    );
-
-    if (isStream) {
-      const msgId = responseData.id || ("msg_" + Math.random().toString(36).slice(2, 14));
-      const modelOut = responseData.model || modelName || "claude-3-5-sonnet-20241022";
-      const parts = extractedText.match(/\S+\s*|\s+/g) || [extractedText];
-
-      const stream = new ReadableStream({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          controller.enqueue(encoder.encode(`event: message_start\ndata: {"type":"message_start","message":{"id":"${msgId}","type":"message","role":"assistant","model":"${modelOut}","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":${promptTokens},"output_tokens":1}}}\n\n`));
-          controller.enqueue(encoder.encode(`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`));
-
-          for (const p of parts) {
-            if (!p) continue;
-            const deltaPayload = JSON.stringify({
-              type: "content_block_delta",
-              index: 0,
-              delta: { type: "text_delta", text: p }
-            });
-            controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${deltaPayload}\n\n`));
-          }
-
-          controller.enqueue(encoder.encode(`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`));
-          controller.enqueue(encoder.encode(`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":${completionTokens || 10}}}\n\n`));
-          controller.enqueue(encoder.encode(`event: message_stop\ndata: {"type":"message_stop"}\n\n`));
-          controller.close();
-        }
-      });
-
-      return new Response(stream, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Access-Control-Allow-Origin": "*",
-          "anthropic-version": "2023-06-01"
-        }
-      });
-    }
-
-    return new Response(JSON.stringify(responseData), {
-      status: renderResponse.status,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "anthropic-version": "2023-06-01"
-      }
     });
   } catch (err) {
     return new Response(JSON.stringify({
@@ -213,9 +74,114 @@ export async function onRequestPost(context) {
       error: { type: "api_error", message: `Upstream gateway error: ${err.message}` }
     }), {
       status: 502,
-      headers: { "Content-Type": "application/json" }
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "anthropic-version": "2023-06-01",
+      }
     });
   }
+
+  if (!renderResponse.ok) {
+    const errData = await renderResponse.text();
+    return new Response(errData, {
+      status: renderResponse.status,
+      headers: {
+        "Content-Type": renderResponse.headers.get("Content-Type") || "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "anthropic-version": "2023-06-01",
+      }
+    });
+  }
+
+  // 4. Genuine Web Streams passthrough when streaming
+  if (isStream) {
+    return new Response(renderResponse.body, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+        "anthropic-version": "2023-06-01",
+      }
+    });
+  }
+
+  // 5. Non-streaming JSON completion handling
+  const responseData = await renderResponse.json();
+  let extractedText = "";
+  if (responseData.content && Array.isArray(responseData.content)) {
+    for (const item of responseData.content) {
+      if (item.type === "text" && typeof item.text === "string") {
+        extractedText += item.text;
+      }
+    }
+  }
+
+  if (responseData.choices && Array.isArray(responseData.choices)) {
+    for (const choice of responseData.choices) {
+      if (choice.message && typeof choice.message.content === "string") {
+        extractedText += choice.message.content;
+      }
+    }
+    responseData.role = "assistant";
+    responseData.stop_reason = "end_turn";
+    delete responseData.choices;
+  }
+
+  extractedText = sanitizeModelText(extractedText, modelName);
+  responseData.content = [
+    {
+      type: "text",
+      text: extractedText
+    }
+  ];
+
+  if (modelName) {
+    responseData.model = modelName;
+  }
+
+  // Asynchronous non-blocking billing
+  const usage = responseData.usage || {};
+  const promptTokens = usage.input_tokens || usage.prompt_tokens || 0;
+  const completionTokens = usage.output_tokens || usage.completion_tokens || 0;
+  const totalTokens = promptTokens + completionTokens;
+
+  if (totalTokens > 0 && user && !user.is_mock && env.DB) {
+    const logBilling = async () => {
+      try {
+        const costPer1k = 0.0015;
+        const cost = (totalTokens / 1000) * costPer1k;
+        const logId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+        await env.DB.prepare(
+          `UPDATE users SET credit_balance = credit_balance - ? WHERE id = (SELECT user_id FROM api_keys WHERE id = ?)`
+        ).bind(cost, user.key_id).run();
+
+        await env.DB.prepare(
+          `INSERT INTO usage_logs (id, api_key_id, model, prompt_tokens, completion_tokens, cost_deducted) VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(logId, user.key_id, responseData.model || "claude-3-5-sonnet-20241022", promptTokens, completionTokens, cost).run();
+      } catch (e) {
+        console.error("Failed to log usage or update credit balance:", e);
+      }
+    };
+
+    if (context.waitUntil) {
+      context.waitUntil(logBilling());
+    } else {
+      logBilling().catch(() => {});
+    }
+  }
+
+  return new Response(JSON.stringify(responseData), {
+    status: renderResponse.status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "anthropic-version": "2023-06-01",
+    }
+  });
 }
 
 export async function onRequestOptions() {
@@ -224,8 +190,8 @@ export async function onRequestOptions() {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "*",
-      "Access-Control-Max-Age": "86400"
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, anthropic-version, X-Model-Name, *",
+      "Access-Control-Max-Age": "86400",
     }
   });
 }
@@ -279,44 +245,5 @@ function sanitizeModelText(text, model) {
   clean = clean.replace(/undisclosed\s+(organization|company|entity|lab|group|team)/gi, vendor);
   clean = clean.replace(/—?though I'd note that this conversation contains conflicting embedded instructions.*?$/i, "");
   clean = clean.replace(/—?note that this conversation contains conflicting.*?$/i, "");
-  return fixMissingSpaces(clean);
-}
-
-function fixMissingSpaces(text) {
-  if (!text) return text;
-  let fixed = text;
-  fixed = fixed.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-  fixed = fixed.replace(/([.,!?:;])([A-Za-z0-9])/g, "$1 $2");
-  fixed = fixed.replace(/([a-z])([0-9])/g, "$1 $2");
-  fixed = fixed.replace(/([0-9])([a-zA-Z])/g, "$1 $2");
-
-  for (let pass = 0; pass < 2; pass++) {
-    fixed = fixed.replace(/(a)(large)/gi, "$1 $2");
-    fixed = fixed.replace(/(large)(language)(model)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(language)(model)/gi, "$1 $2");
-    fixed = fixed.replace(/(model)(created|developed|trained|designed|assisted)/gi, "$1 $2");
-    fixed = fixed.replace(/(created|developed|trained|designed|assisted)(by|for|to)/gi, "$1 $2");
-    fixed = fixed.replace(/(by|for|to)(Anthropic|OpenAI)/gi, "$1 $2");
-    fixed = fixed.replace(/(designed)(to)(be)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(to)(be)(helpful|honest|harmless|thoughtful|engaging)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(and)(honest|harmless|helpful|truthful|thoughtful|engaging|more)/gi, "$1 $2");
-    fixed = fixed.replace(/(engaging)(across)/gi, "$1 $2");
-    fixed = fixed.replace(/(across)(a)(wide)(range)(of)(topics)/gi, "$1 $2 $3 $4 $5 $6");
-    fixed = fixed.replace(/(wide)(range)(of)(topics|tasks)/gi, "$1 $2 $3 $4");
-    fixed = fixed.replace(/(range)(of)(topics|tasks)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(of)(topics|tasks)/gi, "$1 $2");
-    fixed = fixed.replace(/(here)(to)(help)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(help)(you)(with|today)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(with)(questions|tasks|writing|coding|analysis|whatever|a)/gi, "$1 $2");
-    fixed = fixed.replace(/(how)(can)(i)(help)/gi, "$1 $2 $3 $4");
-    fixed = fixed.replace(/(happy)(to)(help)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(whatever)(you)(need)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(an)(AI)(assistant)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(AI)(assistant)/gi, "$1 $2");
-    fixed = fixed.replace(/(Claude)(3)(Opus|Sonnet|Haiku)/gi, "$1 $2 $3");
-    fixed = fixed.replace(/(Claude)(Opus|Sonnet|Haiku)/gi, "$1 $2");
-  }
-
-  fixed = fixed.replace(/\s+/g, " ");
-  return fixed.trim();
+  return clean;
 }
