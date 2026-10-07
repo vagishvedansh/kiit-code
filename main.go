@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -773,17 +774,48 @@ func generateRequestID() string {
 	return "req_" + hex.EncodeToString(b)
 }
 
-var sharedDirectClient tls_client.HttpClient
 
-func init() {
-	options := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(30),
-		tls_client.WithClientProfile(profiles.Chrome_131),
-	}
-	sharedDirectClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), options...)
+var (
+	sharedDirectClient tls_client.HttpClient
+	sharedTorClient    tls_client.HttpClient
+)
+
+var openCodeCoreTools = []map[string]interface{}{
+	{
+		"type":        "function",
+		"name":        "bash",
+		"description": "Execute a bash command in the terminal",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"command": map[string]string{"type": "string", "description": "The command to execute"},
+			},
+			"required": []string{"command"},
+		},
+		"strict": false,
+	},
+	{
+		"type":        "function",
+		"name":        "read",
+		"description": "Read contents of a file",
+		"parameters": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"filePath": map[string]string{"type": "string", "description": "The absolute path to the file to read"},
+			},
+			"required": []string{"filePath"},
+		},
+		"strict": false,
+	},
 }
 
-func newTorClient() tls_client.HttpClient {
+func init() {
+	optionsDirect := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(45),
+		tls_client.WithClientProfile(profiles.Chrome_131),
+	}
+	sharedDirectClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), optionsDirect...)
+
 	proxyURLStr := os.Getenv("TOR_PROXY_URL")
 	if proxyURLStr == "" {
 		proxyURLStr = os.Getenv("PROXY_URL")
@@ -791,14 +823,19 @@ func newTorClient() tls_client.HttpClient {
 	if proxyURLStr == "" {
 		proxyURLStr = "socks5://127.0.0.1:9050"
 	}
-
-	options := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(35),
+	optionsTor := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(45),
 		tls_client.WithClientProfile(profiles.Chrome_131),
 		tls_client.WithProxyUrl(proxyURLStr),
 	}
-	client, _ := tls_client.NewHttpClient(tls_client.NewLogger(), options...)
-	return client
+	sharedTorClient, _ = tls_client.NewHttpClient(tls_client.NewLogger(), optionsTor...)
+}
+
+func newTorClient() tls_client.HttpClient {
+	if sharedTorClient != nil {
+		return sharedTorClient
+	}
+	return sharedDirectClient
 }
 
 // newStreamClient returns an HTTP client suitable for long-lived SSE streams:
@@ -1494,9 +1531,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		tempPayload["temperature"] = 0.1
 	}
 
-	reqClient := newTorClient()
 	var resp *fhttp.Response
 	var errDo error
+	var cancelFunc context.CancelFunc
 
 	var targetModels = []string{targetModel}
 	if targetModel != "nemotron-3.5-lightning-free" && targetModel != "x-preview-f-free" {
@@ -1524,8 +1561,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				tempPayload["input"] = inputs
 				delete(tempPayload, "messages")
 			}
-			tempPayload["reasoning"] = map[string]string{"effort": "high"}
+			tempPayload["reasoning"] = map[string]string{"effort": "high", "summary": "auto"}
 			tempPayload["store"] = false
+			tempPayload["tools"] = openCodeCoreTools
 			if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
 				tempPayload["prompt_cache_key"] = reqSession
 			} else {
@@ -1551,7 +1589,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		currentBody, _ := json.Marshal(tempPayload)
 
 		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 
 			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
 			upstreamReq.Header.Set("Content-Type", "application/json")
@@ -1567,9 +1605,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
 
-				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
-					upstreamReq.Header.Set("x-opencode-session", reqSession)
+				reqSession := r.Header.Get("X-Opencode-Session")
+				if reqSession == "" {
+					reqSession = generateSessionID()
 				}
+				upstreamReq.Header.Set("x-opencode-session", reqSession)
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
 				}
@@ -1589,42 +1629,35 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			upstreamReq.Header.Del("X-Real-IP")
 			upstreamReq.Header.Del("CF-Connecting-IP")
 
-			torSem <- struct{}{}
-			resp, errDo = reqClient.Do(upstreamReq)
-			<-torSem
+			var useClient tls_client.HttpClient
+			if attempt == 0 {
+				useClient = sharedDirectClient
+			} else {
+				useClient = sharedTorClient
+				torSem <- struct{}{}
+			}
+
+			resp, errDo = useClient.Do(upstreamReq)
+
+			if attempt > 0 {
+				<-torSem
+			}
 
 			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-				cancel()
+				cancelFunc = cancel
 				break
 			}
 
-			// Immediate fallback to sharedDirectClient if Tor is slow or failing
-			if errDo != nil || (resp != nil && resp.StatusCode != http.StatusOK) {
-				if resp != nil {
-					resp.Body.Close()
-				}
-				directReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
-				directReq.Header = upstreamReq.Header.Clone()
-				respDirect, errDirect := sharedDirectClient.Do(directReq)
-				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
-					resp = respDirect
-					errDo = nil
-					cancel()
-					break
-				}
-				if respDirect != nil {
-					respDirect.Body.Close()
-				}
-			}
-
 			if resp != nil {
-				log.Printf("[WARN] Upstream %s HTTP %d. Rotating Tor IP...", currentTarget, resp.StatusCode)
+				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
 				resp.Body.Close()
 			} else {
-				log.Printf("[WARN] Upstream %s connection error: %v. Rotating Tor IP...", currentTarget, errDo)
+				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
 			}
 			cancel()
-			tryRotateIP()
+			if attempt > 0 {
+				tryRotateIP()
+			}
 		}
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
@@ -1660,61 +1693,101 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// The upstream was forced non-streaming; buffer its JSON, then re-emit
-		// it as incremental SSE deltas so clients see token-by-token streaming.
-		respBody, _ := io.ReadAll(resp.Body)
-		authenticBody := makeAuthenticResponse(respBody, virtualModel, promptLen)
+		reader := bufio.NewReader(resp.Body)
+		flusher.Flush()
 
-		var chunkPayload map[string]interface{}
-		var fullContent string
-		if err := json.Unmarshal(authenticBody, &chunkPayload); err == nil {
-			chunkPayload["object"] = "chat.completion.chunk"
-			// Strip internal proxy/backend fields that could leak infra details.
-			for _, k := range []string{"ec_transfer_params", "kv_transfer_params", "prompt_logprobs", "prompt_token_ids", "token_ids", "routed_experts", "stop_reason", "metrics", "service_tier", "annotations"} {
-				delete(chunkPayload, k)
-			}
-			if choices, ok := chunkPayload["choices"].([]interface{}); ok && len(choices) > 0 {
-				if cm, ok := choices[0].(map[string]interface{}); ok {
-					if msg, ok := cm["message"].(map[string]interface{}); ok {
-						fullContent, _ = msg["content"].(string)
+		completionID := "chatcmpl-" + generateBase62(16)
+		hasEmittedAny := false
+
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				trimmed := bytes.TrimSpace(line)
+				if bytes.HasPrefix(trimmed, []byte("data: ")) {
+					payload := bytes.TrimPrefix(trimmed, []byte("data: "))
+					if string(payload) == "[DONE]" {
+						w.Write([]byte("data: [DONE]\n\n"))
+						flusher.Flush()
+						hasEmittedAny = true
+						break
+					}
+					var j map[string]interface{}
+					if err := json.Unmarshal(payload, &j); err == nil {
+						if _, hasChoices := j["choices"]; hasChoices {
+							w.Write([]byte("data: "))
+							w.Write(payload)
+							w.Write([]byte("\n\n"))
+							flusher.Flush()
+							hasEmittedAny = true
+							continue
+						}
+						var textDelta string
+						if t, ok := j["type"].(string); ok {
+							if t == "response.output_text.delta" {
+								textDelta, _ = j["delta"].(string)
+							} else if t == "response.content_part.delta" {
+								if dMap, ok := j["delta"].(map[string]interface{}); ok {
+									textDelta, _ = dMap["text"].(string)
+								}
+							}
+						}
+						if textDelta != "" {
+							chunk := map[string]interface{}{
+								"id":      completionID,
+								"object":  "chat.completion.chunk",
+								"created": time.Now().Unix(),
+								"model":   virtualModel,
+								"choices": []map[string]interface{}{
+									{
+										"index": 0,
+										"delta": map[string]interface{}{
+											"role":    "assistant",
+											"content": textDelta,
+										},
+										"finish_reason": nil,
+									},
+								},
+							}
+							chunkBytes, _ := json.Marshal(chunk)
+							w.Write([]byte("data: "))
+							w.Write(chunkBytes)
+							w.Write([]byte("\n\n"))
+							flusher.Flush()
+							hasEmittedAny = true
+						}
 					}
 				}
 			}
+			if err != nil {
+				break
+			}
 		}
 
-		wordSpaceRegex := regexp.MustCompile(`\S+\s*|\s+`)
-		parts := wordSpaceRegex.FindAllString(fullContent, -1)
-		writer := func(delta string, finish *string) {
-			var finishVal interface{}
-			if finish != nil {
-				finishVal = *finish
-			} else {
-				finishVal = nil
+		if hasEmittedAny {
+			stop := "stop"
+			finalChunk := map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   virtualModel,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]interface{}{},
+						"finish_reason": &stop,
+					},
+				},
 			}
-			cm := map[string]interface{}{
-				"index":         0,
-				"delta":         map[string]interface{}{"content": delta, "role": "assistant"},
-				"finish_reason": finishVal,
-			}
-			chunkPayload["choices"] = []interface{}{cm}
-			if dataBytes, err := json.Marshal(chunkPayload); err == nil {
-				w.Write([]byte("data: " + string(dataBytes) + "\n\n"))
-			}
+			finalBytes, _ := json.Marshal(finalChunk)
+			w.Write([]byte("data: "))
+			w.Write(finalBytes)
+			w.Write([]byte("\n\n"))
+			w.Write([]byte("data: [DONE]\n\n"))
 			flusher.Flush()
 		}
-
-		for _, p := range parts {
-			if p == "" {
-				continue
-			}
-			writer(p, nil)
-			time.Sleep(12 * time.Millisecond)
+		if cancelFunc != nil {
+			cancelFunc()
 		}
-		// Emit a final empty-delta chunk with finish_reason="stop".
-		stop := "stop"
-		writer("", &stop)
-		w.Write([]byte("data: [DONE]\n\n"))
-		flusher.Flush()
 		return
 	}
 
@@ -2054,7 +2127,6 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	var errDo error
 	var cancelFunc context.CancelFunc
 
-	reqClient := newTorClient()
 
 	for _, currentTarget := range targetModels {
 		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
@@ -2076,8 +2148,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"input":            responsesInput,
 				"temperature":      0.1,
 				"stream":           true,
-				"reasoning":        map[string]string{"effort": "high"},
+				"reasoning":        map[string]string{"effort": "high", "summary": "auto"},
 				"store":            false,
+				"tools":            openCodeCoreTools,
 				"prompt_cache_key": promptCacheKey,
 			}
 			currentPayloadBytes, _ = json.Marshal(responsesReq)
@@ -2092,7 +2165,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 
 			upstreamReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 			upstreamReq.Header.Set("Content-Type", "application/json")
@@ -2108,9 +2181,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
 
-				if reqSession := r.Header.Get("X-Opencode-Session"); reqSession != "" {
-					upstreamReq.Header.Set("x-opencode-session", reqSession)
+				reqSession := r.Header.Get("X-Opencode-Session")
+				if reqSession == "" {
+					reqSession = generateSessionID()
 				}
+				upstreamReq.Header.Set("x-opencode-session", reqSession)
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
 				}
@@ -2130,43 +2205,38 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			upstreamReq.Header.Del("X-Real-IP")
 			upstreamReq.Header.Del("CF-Connecting-IP")
 
-			torSem <- struct{}{}
-			resp, errDo = reqClient.Do(upstreamReq)
-			<-torSem
+			var useClient tls_client.HttpClient
+			if attempt == 0 {
+				useClient = sharedDirectClient
+			} else {
+				useClient = sharedTorClient
+				torSem <- struct{}{}
+			}
+
+			resp, errDo = useClient.Do(upstreamReq)
+
+			if attempt > 0 {
+				<-torSem
+			}
 
 			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 				cancelFunc = cancel
 				break
 			}
 
-			// Immediate fallback to sharedDirectClient if Tor is slow or failing
-			if errDo != nil || (resp != nil && resp.StatusCode != http.StatusOK) {
-				if resp != nil {
-					resp.Body.Close()
-				}
-				directReq, _ := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
-				directReq.Header = upstreamReq.Header.Clone()
-				respDirect, errDirect := sharedDirectClient.Do(directReq)
-				if errDirect == nil && respDirect != nil && respDirect.StatusCode == http.StatusOK {
-					resp = respDirect
-					errDo = nil
-					cancelFunc = cancel
-					break
-				}
-				if respDirect != nil {
-					respDirect.Body.Close()
-				}
-			}
-
 			if resp != nil {
-				log.Printf("[WARN] Anthropic upstream %s HTTP %d. Rotating Tor IP...", currentTarget, resp.StatusCode)
+				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
 				resp.Body.Close()
 			} else {
-				log.Printf("[WARN] Anthropic upstream %s connection error: %v. Rotating Tor IP...", currentTarget, errDo)
+				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
 			}
 			cancel()
-			tryRotateIP()
+			if attempt > 0 {
+				tryRotateIP()
+			}
 		}
+
+
 
 		if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			break
