@@ -738,11 +738,37 @@ func getUpstreamConfig(targetModel string) (string, string) {
 	return "https://opencode.ai/zen/v1/" + endpoint, ""
 }
 
-func generateSessionID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return "ses_" + hex.EncodeToString(b)
+
+var knownOpencodeSessions = []string{
+	"ses_f1ca452fdffe1IvfaQCvkIzXHe",
+	"ses_f0ebae607ffe5I17yWRsxLIaAe",
+	"ses_f0ebaee9effeEMschNkr9NEoQH",
+	"ses_f0ebadbaaffem5fNz7np1xyc5H",
+	"ses_f0ebad1f9ffeOxX5DLTMii3OPH",
+	"ses_f0ec832f9ffeCPFtPBd0e8o1Ip",
+	"ses_f0ec8450effeJGVY3xONvrWoHj",
+	"ses_f0ec8571cffefll5LmCfTCh4Vl",
+	"ses_f0ec868feffemELqWn6vZXsEst",
+	"ses_f0ec87c6dffescHb47fWDx3IaA",
+	"ses_f0ec890beffep12wFfK79t2d0I",
+	"ses_f0ec8a5a5ffeVvP1U8X1v9T7gR",
+	"ses_f0ec8b89effeiJd2H9D1W7y4y6",
+	"ses_f0ec8ca98ffeN8M5uR0mB4L3vP",
 }
+
+func generateSessionID() string {
+	b := make([]byte, 1)
+	rand.Read(b)
+	idx := int(b[0]) % len(knownOpencodeSessions)
+	return knownOpencodeSessions[idx]
+}
+
+func generateRequestID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return "req_" + hex.EncodeToString(b)
+}
+
 
 var sharedDirectClient = &http.Client{
 	Timeout: 30 * time.Second,
@@ -1126,6 +1152,31 @@ func setAuthenticHeaders(w http.ResponseWriter, virtualModel string, elapsedMs i
 }
 
 func makeAuthenticResponse(body []byte, virtualModel string, promptLen int) []byte {
+	if bytes.Contains(body, []byte("data: ")) {
+		extractedText := extractSSEText(body)
+		cleanText := cleanOutputText(extractedText, virtualModel)
+		usage := normalizeUsage(cleanText, virtualModel, promptLen)
+		chatResp := map[string]interface{}{
+			"id":      generateOpenAIID(),
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   virtualModel,
+			"choices": []interface{}{
+				map[string]interface{}{
+					"index": 0,
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": cleanText,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": usage,
+		}
+		b, _ := json.Marshal(chatResp)
+		return b
+	}
+
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
@@ -1441,7 +1492,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var tempPayload map[string]interface{}
 	json.Unmarshal(bodyBytes, &tempPayload)
 	delete(tempPayload, "stream")
-	tempPayload["stream"] = false
+	tempPayload["stream"] = true
 	if _, hasTemp := tempPayload["temperature"]; !hasTemp {
 		tempPayload["temperature"] = 0.1
 	}
@@ -1528,7 +1579,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
 					upstreamReq.Header.Set("x-opencode-request", reqReq)
 				} else {
-					upstreamReq.Header.Set("x-opencode-request", generateSessionID())
+					upstreamReq.Header.Set("x-opencode-request", generateRequestID())
 				}
 			} else {
 				if currentTargetAuth != "" {
@@ -1751,6 +1802,47 @@ func contentToString(raw interface{}) string {
 
 // extractOpenAIContent robustly pulls assistant text out of an OpenAI-shaped
 // upstream response, tolerating string / array / null content and reasoning_content fallbacks.
+
+func extractSSEText(respBody []byte) string {
+	var contentBuilder string
+	lines := bytes.Split(respBody, []byte("\n"))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("data: ")) {
+			payload := bytes.TrimPrefix(line, []byte("data: "))
+			if string(payload) == "[DONE]" {
+				continue
+			}
+			var j map[string]interface{}
+			if err := json.Unmarshal(payload, &j); err != nil {
+				continue
+			}
+			if choices, ok := j["choices"].([]interface{}); ok && len(choices) > 0 {
+				if choice, ok := choices[0].(map[string]interface{}); ok {
+					if delta, ok := choice["delta"].(map[string]interface{}); ok {
+						if content, ok := delta["content"].(string); ok {
+							contentBuilder += content
+						}
+					}
+				}
+			}
+			if t, ok := j["type"].(string); ok {
+				if t == "response.output_text.delta" {
+					if delta, ok := j["delta"].(string); ok {
+						contentBuilder += delta
+					}
+				} else if t == "content_block_delta" {
+					if delta, ok := j["delta"].(map[string]interface{}); ok {
+						if text, ok := delta["text"].(string); ok {
+							contentBuilder += text
+						}
+					}
+				}
+			}
+		}
+	}
+	return contentBuilder
+}
 func extractOpenAIContent(respBody []byte) string {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(respBody, &raw); err != nil {
@@ -1986,7 +2078,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"model":       currentTarget,
 				"input":       responsesInput,
 				"temperature": 0.1,
-				"stream":      false,
+				"stream":      true,
 				"reasoning":   map[string]string{"effort": "high"},
 				"store":       false,
 				"prompt_cache_key": promptCacheKey,
@@ -1997,7 +2089,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"model":       currentTarget,
 				"messages":    openAIMessages,
 				"temperature": 0.1,
-				"stream":      false,
+				"stream":      true,
 			}
 			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
@@ -2028,7 +2120,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				if reqReq := r.Header.Get("X-Opencode-Request"); reqReq != "" {
 					upstreamReq.Header.Set("x-opencode-request", reqReq)
 				} else {
-					upstreamReq.Header.Set("x-opencode-request", generateSessionID())
+					upstreamReq.Header.Set("x-opencode-request", generateRequestID())
 				}
 			} else {
 				if currentTargetAuth != "" {
@@ -2106,6 +2198,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	// Robust extraction: tolerate string / array / null content and fall back to
 	// reasoning_content when the upstream emits text only in the reasoning channel.
 	extractedText := extractOpenAIContent(respBody)
+	if bytes.Contains(respBody, []byte("data: ")) && extractedText == "" {
+		extractedText = extractSSEText(respBody)
+	}
 
 	extractedText = cleanOutputText(extractedText, virtualModel)
 	outTokenCount := estimateTokens(extractedText)
