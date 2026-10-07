@@ -243,3 +243,107 @@ func TestExtractSSEText_ContentPartDelta(t *testing.T) {
 	}
 }
 
+func TestStreamingReasoningFilter_Basic(t *testing.T) {
+	filter := NewStreamingReasoningFilter("claude-3-5-sonnet")
+	out1 := filter.Feed("<think>internal thoughts here</think>Hello world!")
+	out1 += filter.Flush()
+	if out1 != "Hello world!" {
+		t.Errorf("expected 'Hello world!', got %q", out1)
+	}
+}
+
+func TestStreamingReasoningFilter_MultiChunk(t *testing.T) {
+	filter := NewStreamingReasoningFilter("claude-3-5-sonnet")
+	chunks := []string{
+		"<think>Thinking step 1. ",
+		"Thinking step 2. ",
+		"</think>The final ",
+		"answer is 42.",
+	}
+	var res string
+	for _, c := range chunks {
+		res += filter.Feed(c)
+	}
+	res += filter.Flush()
+	expected := "The final answer is 42."
+	if res != expected {
+		t.Errorf("expected %q, got %q", expected, res)
+	}
+}
+
+func TestStreamingReasoningFilter_SplitTag(t *testing.T) {
+	filter := NewStreamingReasoningFilter("claude-3-5-sonnet")
+	chunks := []string{
+		"<th",
+		"ink>thought</th",
+		"ink>visible content",
+	}
+	var res string
+	for _, c := range chunks {
+		res += filter.Feed(c)
+	}
+	res += filter.Flush()
+	expected := "visible content"
+	if res != expected {
+		t.Errorf("expected %q, got %q", expected, res)
+	}
+}
+
+func TestStreamingReasoningFilter_PreserveAngleBrackets(t *testing.T) {
+	filter := NewStreamingReasoningFilter("claude-3-5-sonnet")
+	input := "if x < 5 and y > 10: return True"
+	out := filter.Feed(input) + filter.Flush()
+	if out != input {
+		t.Errorf("expected %q, got %q", input, out)
+	}
+}
+
+func TestModelRoutingAndFallback_M3Parity(t *testing.T) {
+	testModels := []string{
+		"claude-3-5-sonnet",
+		"claude-3-5-sonnet-20241022",
+		"claude-3-opus",
+		"claude-3-haiku",
+		"gpt-4o",
+		"gpt-4o-mini",
+		"deepseek-r1",
+		"deepseek-v3",
+		"simulated-rescue-model",
+	}
+	for _, m := range testModels {
+		if !isSupportedModel(m) {
+			t.Errorf("model %q should be supported", m)
+		}
+		cands := getCandidateModels(modelMap[m])
+		if len(cands) == 0 || cands[0] == "" {
+			t.Errorf("model %q has no valid candidate models", m)
+		}
+	}
+}
+
+func TestModelFidelity_NoMidwayDegradation(t *testing.T) {
+	freeModels := []string{
+		"muse-spark-1.3",
+		"muse-spark-1.2",
+		"mimo-v2.6",
+		"mimo-v2.6-flash-free",
+		"space-bunny",
+		"space-bunny-free",
+		"nemotron-3-ultra-free",
+		"ling-3.0-flash-fin-free",
+		"ling-3.1-flash-free",
+		"jev-1.13-free",
+		"exo-free",
+		"kimi-k3",
+	}
+	for _, m := range freeModels {
+		if !isSupportedModel(m) {
+			t.Errorf("model %q must be recognized as supported", m)
+		}
+		target := modelMap[m]
+		if target == "" {
+			t.Errorf("model %q must have an upstream target", m)
+		}
+	}
+}
+

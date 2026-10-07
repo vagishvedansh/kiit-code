@@ -839,14 +839,22 @@ var modelMap = map[string]string{
 	"muse-spark-1.3-contributor-free": "muse-spark-1.3-contributor-free",
 	"muse-spark-1.2":                  "muse-spark-1.2-contributor-free",
 	"muse-spark-1.2-contributor-free": "muse-spark-1.2-contributor-free",
+	"mimo-v2.6":                       "mimo-v2.6-flash-free",
 	"mimo-v2.6-flash-free":            "mimo-v2.6-flash-free",
+	"space-bunny":                     "space-bunny-free",
 	"space-bunny-free":                "space-bunny-free",
+	"ling-3.0":                        "ling-3.0-flash-fin-free",
 	"ling-3.0-flash-fin-free":         "ling-3.0-flash-fin-free",
+	"ling-3.1":                        "ling-3.1-flash-free",
 	"ling-3.1-flash-free":             "ling-3.1-flash-free",
 	"nemotron-3-ultra-free":           "nemotron-3-ultra-free",
+	"jev-1.13":                        "jev-1.13-free",
 	"jev-1.13-free":                   "jev-1.13-free",
+	"exo":                             "exo-free",
 	"exo-free":                        "exo-free",
+	"longcat":                         "longcat-2.5-preview-free",
 	"longcat-2.5-preview-free":        "longcat-2.5-preview-free",
+	"fledge":                          "fledge-alpha-free",
 	"fledge-alpha-free":               "fledge-alpha-free",
 	"kimi-k3":                         "kimi-k3",
 	"moonshotai/kimi-k3":              "kimi-k3",
@@ -1043,6 +1051,37 @@ var openCodeCoreTools = []map[string]interface{}{
 			"required": []string{"filePath"},
 		},
 		"strict": false,
+	},
+}
+
+var openCodeChatCompletionsTools = []map[string]interface{}{
+	{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "bash",
+			"description": "Execute a bash command in the terminal",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"command": map[string]string{"type": "string", "description": "The command to execute"},
+				},
+				"required": []string{"command"},
+			},
+		},
+	},
+	{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "read",
+			"description": "Read contents of a file",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"filePath": map[string]string{"type": "string", "description": "The absolute path to the file to read"},
+				},
+				"required": []string{"filePath"},
+			},
+		},
 	},
 }
 
@@ -1852,8 +1891,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
+	var lastStatusCode int
 
-	targetModels := getCandidateModels(targetModel)
+	// Strict model fidelity: never degrade to a different model midway.
+	// On rate limit (429) or transient upstream issues, fallback to Tor for the exact same model.
+	targetModels := []string{targetModel}
 
 	for _, currentTarget := range targetModels {
 		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
@@ -1908,7 +1950,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			currentPayload["messages"] = baseMessages
 			if strings.Contains(currentTargetURL, "opencode.ai") {
-				currentPayload["tools"] = openCodeCoreTools
+				currentPayload["tools"] = openCodeChatCompletionsTools
 			}
 		}
 
@@ -1935,7 +1977,11 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
 				upstreamReq.Header.Set("x-opencode-session", sessionID)
-				upstreamReq.Header.Set("x-opencode-request", requestID)
+				reqIDToUse := requestID
+				if attempt > 0 && r.Header.Get("X-Opencode-Request") == "" {
+					reqIDToUse = generateRequestID()
+				}
+				upstreamReq.Header.Set("x-opencode-request", reqIDToUse)
 
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
@@ -1985,13 +2031,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if resp != nil {
-				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
 				code := resp.StatusCode
+				lastStatusCode = code
+				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, code, attempt)
 				resp.Body.Close()
 				cancel()
-				if code == 429 || code == 404 || code == 503 || code == 403 {
+				// Only break on unrecoverable client errors or missing endpoints
+				if code == 400 || code == 404 || code == 422 {
 					break
 				}
+				// On 429, 403, 500, 502, 503, 504: do NOT break! Fallback to Tor (attempt 1 and 2) for the SAME model.
 			} else {
 				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
 				cancel()
@@ -2013,6 +2062,20 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
 		setAuthenticHeaders(w, virtualModel, time.Since(startTime).Milliseconds())
+		if lastStatusCode == http.StatusTooManyRequests {
+			w.WriteHeader(http.StatusTooManyRequests)
+			if strings.Contains(virtualModel, "claude") {
+				w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"The requested model is rate limited. Please retry."}}`))
+			} else {
+				w.Write([]byte(`{"error":{"message":"The requested model is rate limited. Please retry.","type":"requests","code":"rate_limit_exceeded"}}`))
+			}
+			return
+		} else if lastStatusCode == http.StatusNotFound {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":{"message":"The model ` + virtualModel + ` does not exist","type":"invalid_request_error","param":"model","code":"model_not_found"}}`))
+			return
+		}
+
 		if strings.Contains(virtualModel, "claude") {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"The requested model is currently experiencing high load. Please retry."}}`))
@@ -2460,6 +2523,13 @@ func isSupportedModel(name string) bool {
 		strings.HasPrefix(mLower, "gpt-") ||
 		strings.HasPrefix(mLower, "deepseek-") ||
 		strings.HasPrefix(mLower, "qwen-") ||
+		strings.HasPrefix(mLower, "muse-") ||
+		strings.HasPrefix(mLower, "mimo-") ||
+		strings.HasPrefix(mLower, "nemotron-") ||
+		strings.HasPrefix(mLower, "ling-") ||
+		strings.HasPrefix(mLower, "kimi-") ||
+		strings.HasPrefix(mLower, "exo-") ||
+		strings.HasSuffix(mLower, "-free") ||
 		name == "simulated-rescue-model" {
 		return true
 	}
@@ -2580,11 +2650,14 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
-	targetModels := getCandidateModels(targetModel)
+	// Strict model fidelity: never degrade to a different model midway.
+	// On rate limit (429) or transient upstream issues, fallback to Tor for the exact same model.
+	targetModels := []string{targetModel}
 
 	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
+	var lastStatusCode int
 
 	for _, currentTarget := range targetModels {
 		currentTargetURL, currentTargetAuth := getUpstreamConfig(currentTarget)
@@ -2627,7 +2700,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				"stream":      true,
 			}
 			if strings.Contains(currentTargetURL, "opencode.ai") {
-				openAIReq["tools"] = openCodeCoreTools
+				openAIReq["tools"] = openCodeChatCompletionsTools
 			}
 			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
@@ -2653,7 +2726,11 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				upstreamReq.Header.Set("x-opencode-project", "global")
 				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
 				upstreamReq.Header.Set("x-opencode-session", sessionID)
-				upstreamReq.Header.Set("x-opencode-request", requestID)
+				reqIDToUse := requestID
+				if attempt > 0 && r.Header.Get("X-Opencode-Request") == "" {
+					reqIDToUse = generateRequestID()
+				}
+				upstreamReq.Header.Set("x-opencode-request", reqIDToUse)
 
 				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
 					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
@@ -2703,13 +2780,16 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if resp != nil {
-				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, resp.StatusCode, attempt)
 				code := resp.StatusCode
+				lastStatusCode = code
+				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, code, attempt)
 				resp.Body.Close()
 				cancel()
-				if code == 429 || code == 404 || code == 503 || code == 403 {
+				// Only break on unrecoverable client errors or missing endpoints
+				if code == 400 || code == 404 || code == 422 {
 					break
 				}
+				// On 429, 403, 500, 502, 503, 504: do NOT break! Fallback to Tor (attempt 1 and 2) for the SAME model.
 			} else {
 				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
 				cancel()
@@ -2730,6 +2810,15 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if errDo != nil || resp == nil || resp.StatusCode != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
 		setAuthenticHeaders(w, returnModel, time.Since(startTime).Milliseconds())
+		if lastStatusCode == http.StatusTooManyRequests {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"The requested model is rate limited. Please retry."}}`))
+			return
+		} else if lastStatusCode == http.StatusNotFound {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"model: ` + returnModel + `"}}`))
+			return
+		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"The requested model is currently experiencing high load. Please retry."}}`))
 		return
