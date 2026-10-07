@@ -1,0 +1,38 @@
+{
+  "baseline_fds": 23,
+  "baseline_sockets": 14,
+  "baseline_threads": 13,
+  "phases": [
+    {
+      "phase": 1,
+      "name": "Light endpoint burst (50 reqs)",
+      "duration_seconds": 0.049,
+      "success_rate": 1.0,
+      "post_fds": 23,
+      "post_sockets": 14,
+      "post_threads": 14
+    },
+    {
+      "phase": 2,
+      "name": "Aborted connections (20 client RSTs)",
+      "duration_seconds": 0.103,
+      "post_fds": 58,
+      "post_sockets": 49,
+      "post_threads": 18
+    },
+    {
+      "phase": 3,
+      "name": "Boundary / Malformed payload burst (30 reqs)",
+      "duration_seconds": 0.027,
+      "post_fds": 58,
+      "post_sockets": 49,
+      "post_threads": 18
+    }
+  ],
+  "final_fds": 48,
+  "final_sockets": 39,
+  "final_threads": 18,
+  "fd_delta": 25,
+  "socket_delta": 25,
+  "socket_leak_detected": true
+}
