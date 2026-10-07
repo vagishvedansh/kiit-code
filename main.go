@@ -178,18 +178,30 @@ func stripCoTNarration(text string) string {
 		return clean
 	}
 
-	// Remove injected <identity_guard>...</identity_guard> blocks entirely.
-	for {
-		start := strings.Index(clean, "<identity_guard")
-		if start < 0 {
-			break
+	// Remove reasoning blocks entirely: <identity_guard>, <think>, <thought>, <reasoning>, <reflection>
+	reasoningTagPairs := [][2]string{
+		{"<identity_guard", "</identity_guard>"},
+		{"<think", "</think>"},
+		{"<thought", "</thought>"},
+		{"<reasoning", "</reasoning>"},
+		{"<reflection", "</reflection>"},
+		{"<|thought|>", "<|/thought|>"},
+		{"<|start_of_thought|>", "<|end_of_thought|>"},
+	}
+	for _, pair := range reasoningTagPairs {
+		openTag, closeTag := pair[0], pair[1]
+		for {
+			start := strings.Index(strings.ToLower(clean), strings.ToLower(openTag))
+			if start < 0 {
+				break
+			}
+			end := strings.Index(strings.ToLower(clean[start:]), strings.ToLower(closeTag))
+			if end < 0 {
+				clean = clean[:start]
+				break
+			}
+			clean = clean[:start] + clean[start+end+len(closeTag):]
 		}
-		end := strings.Index(clean[start:], "</identity_guard>")
-		if end < 0 {
-			clean = clean[:start]
-			break
-		}
-		clean = clean[:start] + clean[start+end+len("</identity_guard>"):]
 	}
 
 	// Drop any sentence that is meta-commentary about the request, the guard,
@@ -620,6 +632,164 @@ func sanitizeSSEChunk(chunk string, virtualModel string) string {
 	return "data: " + string(cleanedJSON) + "\n\n"
 }
 
+var openTagNames = []string{
+	"<think", "<thought", "<reasoning", "<reflection",
+	"<identity_guard", "<|thought|>", "<|start_of_thought|>",
+}
+
+var closeTagNames = []string{
+	"</think>", "</thought>", "</reasoning>", "</reflection>",
+	"</identity_guard>", "<|/thought|>", "<|end_of_thought|>",
+}
+
+func isOpeningReasoningTagPrefix(s string) bool {
+	for _, tag := range openTagNames {
+		if strings.HasPrefix(tag, s) || strings.HasPrefix(s, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchOpeningReasoningTag(lower string) int {
+	for _, tag := range openTagNames {
+		if strings.HasPrefix(lower, tag) {
+			if strings.HasSuffix(tag, ">") {
+				return len(tag)
+			}
+			if idx := strings.Index(lower, ">"); idx > 0 && idx < 60 {
+				return idx + 1
+			}
+		}
+	}
+	return 0
+}
+
+func isClosingReasoningTagPrefix(s string) bool {
+	for _, tag := range closeTagNames {
+		prefix := strings.TrimSuffix(tag, ">")
+		if strings.HasPrefix(tag, s) || strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchClosingReasoningTag(lower string) int {
+	for _, tag := range closeTagNames {
+		if strings.HasPrefix(lower, tag) {
+			return len(tag)
+		}
+		prefix := strings.TrimSuffix(tag, ">")
+		if strings.HasPrefix(lower, prefix) {
+			if idx := strings.Index(lower, ">"); idx > 0 && idx < 30 {
+				return idx + 1
+			}
+		}
+	}
+	return 0
+}
+
+type StreamingReasoningFilter struct {
+	inReasoningTag bool
+	tagBuffer      string
+	virtualModel   string
+}
+
+func NewStreamingReasoningFilter(virtualModel string) *StreamingReasoningFilter {
+	return &StreamingReasoningFilter{
+		virtualModel: virtualModel,
+	}
+}
+
+func (f *StreamingReasoningFilter) Feed(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	input := f.tagBuffer + chunk
+	f.tagBuffer = ""
+
+	var out strings.Builder
+	i := 0
+	n := len(input)
+
+	for i < n {
+		if f.inReasoningTag {
+			closeIdx := strings.Index(input[i:], "<")
+			if closeIdx < 0 {
+				break
+			}
+			i += closeIdx
+			tail := input[i:]
+			lowerTail := strings.ToLower(tail)
+
+			if isClosingReasoningTagPrefix(lowerTail) {
+				if endTagLen := matchClosingReasoningTag(lowerTail); endTagLen > 0 {
+					f.inReasoningTag = false
+					i += endTagLen
+					continue
+				}
+				if len(tail) < 25 {
+					f.tagBuffer = tail
+					break
+				}
+			}
+			i++
+		} else {
+			openIdx := strings.Index(input[i:], "<")
+			if openIdx < 0 {
+				out.WriteString(input[i:])
+				break
+			}
+			out.WriteString(input[i : i+openIdx])
+			i += openIdx
+
+			tail := input[i:]
+			lowerTail := strings.ToLower(tail)
+
+			if isOpeningReasoningTagPrefix(lowerTail) {
+				if openTagLen := matchOpeningReasoningTag(lowerTail); openTagLen > 0 {
+					f.inReasoningTag = true
+					i += openTagLen
+					continue
+				}
+				if len(tail) < 30 {
+					f.tagBuffer = tail
+					break
+				}
+			}
+			if isClosingReasoningTagPrefix(lowerTail) {
+				if endTagLen := matchClosingReasoningTag(lowerTail); endTagLen > 0 {
+					i += endTagLen
+					continue
+				}
+			}
+
+			out.WriteByte('<')
+			i++
+		}
+	}
+
+	res := out.String()
+	if res != "" {
+		return sanitizeTextContent(res, f.virtualModel)
+	}
+	return ""
+}
+
+func (f *StreamingReasoningFilter) Flush() string {
+	if f.inReasoningTag {
+		f.tagBuffer = ""
+		return ""
+	}
+	rem := f.tagBuffer
+	f.tagBuffer = ""
+	if rem != "" {
+		return sanitizeTextContent(rem, f.virtualModel)
+	}
+	return ""
+}
+
 type MimoTokenCache struct {
 	mu        sync.RWMutex
 	jwt       string
@@ -667,9 +837,20 @@ var modelMap = map[string]string{
 	"muse-spark":                      "muse-spark-1.3-contributor-free",
 	"muse-spark-1.3":                  "muse-spark-1.3-contributor-free",
 	"muse-spark-1.3-contributor-free": "muse-spark-1.3-contributor-free",
-	"kimi-k3":                         "moonshotai/kimi-k3",
-	"moonshotai/kimi-k3":              "moonshotai/kimi-k3",
-	"kimi-k2.6":                       "moonshotai/kimi-k3-free",
+	"muse-spark-1.2":                  "muse-spark-1.2-contributor-free",
+	"muse-spark-1.2-contributor-free": "muse-spark-1.2-contributor-free",
+	"mimo-v2.6-flash-free":            "mimo-v2.6-flash-free",
+	"space-bunny-free":                "space-bunny-free",
+	"ling-3.0-flash-fin-free":         "ling-3.0-flash-fin-free",
+	"ling-3.1-flash-free":             "ling-3.1-flash-free",
+	"nemotron-3-ultra-free":           "nemotron-3-ultra-free",
+	"jev-1.13-free":                   "jev-1.13-free",
+	"exo-free":                        "exo-free",
+	"longcat-2.5-preview-free":        "longcat-2.5-preview-free",
+	"fledge-alpha-free":               "fledge-alpha-free",
+	"kimi-k3":                         "kimi-k3",
+	"moonshotai/kimi-k3":              "kimi-k3",
+	"kimi-k2.6":                       "kimi-k3",
 	"deepseek-v4-flash":               "laguna-s-2.1-free",
 	"nemotron-3-ultra":                "muse-spark-1.3-contributor-free",
 	"nemotron-3.5-lightning-free":     "muse-spark-1.3-contributor-free",
@@ -690,11 +871,16 @@ var modelMap = map[string]string{
 	// Anthropic Series
 	"claude-3-7-sonnet-20250219": "muse-spark-1.3-contributor-free",
 	"claude-3-5-sonnet-20241022": "muse-spark-1.3-contributor-free",
+	"claude-3-5-sonnet":          "muse-spark-1.3-contributor-free",
 	"claude-3-5-haiku-20241022":  "muse-spark-1.3-contributor-free",
+	"claude-3-5-haiku":           "muse-spark-1.3-contributor-free",
 	"claude-opus-5":              "muse-spark-1.3-contributor-free",
 	"claude-3-opus-20240229":     "muse-spark-1.3-contributor-free",
+	"claude-3-opus":              "muse-spark-1.3-contributor-free",
 	"claude-3-haiku-20240307":    "muse-spark-1.3-contributor-free",
+	"claude-3-haiku":             "muse-spark-1.3-contributor-free",
 	"claude-3-sonnet-20240229":   "muse-spark-1.3-contributor-free",
+	"claude-3-sonnet":            "muse-spark-1.3-contributor-free",
 	"claude-sonnet-4":            "muse-spark-1.3-contributor-free",
 
 	// Reasoning, Code & Specialist
@@ -708,13 +894,6 @@ var modelMap = map[string]string{
 }
 
 func getUpstreamConfig(targetModel string) (string, string) {
-	switch targetModel {
-	case "moonshotai/kimi-k3-free":
-		return "https://api.tokenrouter.com/v1/chat/completions", "Bearer sk-LjPyLut0zLwJyUPoDlrHHGZKNnbbe0J1n6bGUxjoDy57n4ZO"
-	case "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "mindai/macaron-v1-tall":
-		return "https://opengateway.gitlawb.com/v1/chat/completions", "Bearer ogw_live_564b6d27f7d37da728e3be7e4ec6f411"
-	}
-
 	endpoint := "chat/completions"
 	mid := strings.Split(targetModel, ":")[0]
 
@@ -1265,8 +1444,10 @@ func setAuthenticHeaders(w http.ResponseWriter, virtualModel string, elapsedMs i
 	w.Header().Set("CF-Ray", cfRay)
 	w.Header().Set("CF-Cache-Status", "DYNAMIC")
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if strings.Contains(virtualModel, "claude") {
+		w.Header().Set("anthropic-version", "2023-06-01")
 		w.Header().Set("request-id", "req_"+reqID)
 		w.Header().Set("anthropic-ratelimit-requests-limit", "10000")
 		w.Header().Set("anthropic-ratelimit-requests-remaining", fmt.Sprintf("%d", reqRem))
@@ -1494,6 +1675,14 @@ func (m *MimoTokenCache) GetJWT() (string, error) {
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version, x-opencode-session, X-Internal-Secret, X-Model-Name")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -1518,21 +1707,47 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var reqPayload ChatRequest
-	requestedModel := "claude-opus-5"
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"Invalid JSON payload","type":"invalid_request_error","code":"bad_request"}}`))
+		return
+	}
 
+	msgsRaw, hasMsgs := rawMap["messages"]
+	if !hasMsgs {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"Missing required field: messages","type":"invalid_request_error","param":"messages","code":"bad_request"}}`))
+		return
+	}
+
+	msgsList, isList := msgsRaw.([]interface{})
+	if !isList || len(msgsList) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"messages array must not be empty","type":"invalid_request_error","param":"messages","code":"bad_request"}}`))
+		return
+	}
+
+	var reqPayload ChatRequest
+	requestedModel := "gpt-4o"
+	if m, ok := rawMap["model"].(string); ok && m != "" {
+		requestedModel = m
+	}
 	headerModel := r.Header.Get("X-Model-Name")
-	// Always unmarshal the payload so fields like Stream are populated even
-	// when the model name arrives via the X-Model-Name header.
-	if err := json.Unmarshal(bodyBytes, &reqPayload); err == nil {
-		if headerModel == "" && reqPayload.Model != "" {
-			requestedModel = reqPayload.Model
-		} else if headerModel != "" {
-			requestedModel = headerModel
-		}
-	} else if headerModel != "" {
+	if headerModel != "" {
 		requestedModel = headerModel
 	}
+	reqPayload.Model = requestedModel
+	if s, ok := rawMap["stream"].(bool); ok {
+		reqPayload.Stream = s
+	}
+	if t, ok := rawMap["temperature"].(float64); ok {
+		reqPayload.Temperature = t
+	}
+	reqPayload.Messages = msgsList
 
 	virtualModel := normalizeModel(requestedModel)
 	promptLen := estimatePromptTokens(bodyBytes)
@@ -1548,7 +1763,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	bodyBytes = injectPrompt(bodyBytes, virtualModel)
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "x-preview-f-free"
+		targetModel = "muse-spark-1.3-contributor-free"
 	}
 
 	if targetModel == "mimo-auto" {
@@ -1649,6 +1864,12 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		currentPayload["temperature"] = baseTemp
 		if topP, ok := basePayload["top_p"]; ok {
 			currentPayload["top_p"] = topP
+		}
+		if maxTokens, ok := basePayload["max_tokens"]; ok {
+			currentPayload["max_tokens"] = maxTokens
+		}
+		if maxCompTokens, ok := basePayload["max_completion_tokens"]; ok {
+			currentPayload["max_completion_tokens"] = maxCompTokens
 		}
 
 		sessionID := getValidSessionID(r.Header.Get("X-Opencode-Session"))
@@ -1821,7 +2042,9 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 
 		completionID := "chatcmpl-" + generateBase62(16)
-		hasEmittedAny := false
+		createdTS := time.Now().Unix()
+		reasoningFilter := NewStreamingReasoningFilter(virtualModel)
+		firstChunkEmitted := false
 
 		for {
 			line, err := reader.ReadBytes('\n')
@@ -1830,21 +2053,51 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if bytes.HasPrefix(trimmed, []byte("data: ")) {
 					payload := bytes.TrimPrefix(trimmed, []byte("data: "))
 					if string(payload) == "[DONE]" {
-						w.Write([]byte("data: [DONE]\n\n"))
-						flusher.Flush()
-						hasEmittedAny = true
 						break
 					}
 					var j map[string]interface{}
 					if err := json.Unmarshal(payload, &j); err == nil {
-						if _, hasChoices := j["choices"]; hasChoices {
-							w.Write([]byte("data: "))
-							w.Write(payload)
-							w.Write([]byte("\n\n"))
-							flusher.Flush()
-							hasEmittedAny = true
-							continue
+						if choices, ok := j["choices"].([]interface{}); ok && len(choices) > 0 {
+							if choiceMap, ok := choices[0].(map[string]interface{}); ok {
+								delete(choiceMap, "reasoning_content")
+								delete(choiceMap, "reasoning")
+								delete(choiceMap, "reasoning_details")
+								var contentStr string
+								hasDeltaContent := false
+								if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+									delete(delta, "reasoning_content")
+									delete(delta, "reasoning")
+									delete(delta, "reasoning_details")
+									if c, ok := delta["content"].(string); ok {
+										contentStr = c
+										hasDeltaContent = true
+									}
+								}
+								if hasDeltaContent {
+									cleaned := reasoningFilter.Feed(contentStr)
+									if cleaned == "" && choiceMap["finish_reason"] == nil {
+										continue
+									}
+									if delta, ok := choiceMap["delta"].(map[string]interface{}); ok {
+										delta["content"] = cleaned
+									}
+								}
+								j["id"] = completionID
+								j["object"] = "chat.completion.chunk"
+								j["model"] = virtualModel
+								j["created"] = createdTS
+								delete(j, "system_fingerprint")
+
+								chunkBytes, _ := json.Marshal(j)
+								w.Write([]byte("data: "))
+								w.Write(chunkBytes)
+								w.Write([]byte("\n\n"))
+								flusher.Flush()
+								firstChunkEmitted = true
+								continue
+							}
 						}
+
 						var textDelta string
 						if t, ok := j["type"].(string); ok {
 							if t == "response.output_text.delta" {
@@ -1853,31 +2106,41 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 								if dMap, ok := j["delta"].(map[string]interface{}); ok {
 									textDelta, _ = dMap["text"].(string)
 								}
+							} else if t == "content_block_delta" {
+								if dMap, ok := j["delta"].(map[string]interface{}); ok {
+									textDelta, _ = dMap["text"].(string)
+								}
 							}
 						}
 						if textDelta != "" {
-							chunk := map[string]interface{}{
-								"id":      completionID,
-								"object":  "chat.completion.chunk",
-								"created": time.Now().Unix(),
-								"model":   virtualModel,
-								"choices": []map[string]interface{}{
-									{
-										"index": 0,
-										"delta": map[string]interface{}{
-											"role":    "assistant",
-											"content": textDelta,
+							cleanDelta := reasoningFilter.Feed(textDelta)
+							if cleanDelta != "" {
+								deltaMap := map[string]interface{}{
+									"content": cleanDelta,
+								}
+								if !firstChunkEmitted {
+									deltaMap["role"] = "assistant"
+									firstChunkEmitted = true
+								}
+								chunk := map[string]interface{}{
+									"id":      completionID,
+									"object":  "chat.completion.chunk",
+									"created": createdTS,
+									"model":   virtualModel,
+									"choices": []map[string]interface{}{
+										{
+											"index":         0,
+											"delta":         deltaMap,
+											"finish_reason": nil,
 										},
-										"finish_reason": nil,
 									},
-								},
+								}
+								chunkBytes, _ := json.Marshal(chunk)
+								w.Write([]byte("data: "))
+								w.Write(chunkBytes)
+								w.Write([]byte("\n\n"))
+								flusher.Flush()
 							}
-							chunkBytes, _ := json.Marshal(chunk)
-							w.Write([]byte("data: "))
-							w.Write(chunkBytes)
-							w.Write([]byte("\n\n"))
-							flusher.Flush()
-							hasEmittedAny = true
 						}
 					}
 				}
@@ -1887,28 +2150,55 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if hasEmittedAny {
-			stop := "stop"
-			finalChunk := map[string]interface{}{
+		if remaining := reasoningFilter.Flush(); remaining != "" {
+			deltaMap := map[string]interface{}{
+				"content": remaining,
+			}
+			if !firstChunkEmitted {
+				deltaMap["role"] = "assistant"
+				firstChunkEmitted = true
+			}
+			chunk := map[string]interface{}{
 				"id":      completionID,
 				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
+				"created": createdTS,
 				"model":   virtualModel,
 				"choices": []map[string]interface{}{
 					{
 						"index":         0,
-						"delta":         map[string]interface{}{},
-						"finish_reason": &stop,
+						"delta":         deltaMap,
+						"finish_reason": nil,
 					},
 				},
 			}
-			finalBytes, _ := json.Marshal(finalChunk)
+			chunkBytes, _ := json.Marshal(chunk)
 			w.Write([]byte("data: "))
-			w.Write(finalBytes)
+			w.Write(chunkBytes)
 			w.Write([]byte("\n\n"))
-			w.Write([]byte("data: [DONE]\n\n"))
 			flusher.Flush()
 		}
+
+		stop := "stop"
+		finalChunk := map[string]interface{}{
+			"id":      completionID,
+			"object":  "chat.completion.chunk",
+			"created": createdTS,
+			"model":   virtualModel,
+			"choices": []map[string]interface{}{
+				{
+					"index":         0,
+					"delta":         map[string]interface{}{},
+					"finish_reason": &stop,
+				},
+			},
+		}
+		finalBytes, _ := json.Marshal(finalChunk)
+		w.Write([]byte("data: "))
+		w.Write(finalBytes)
+		w.Write([]byte("\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+
 		if cancelFunc != nil {
 			cancelFunc()
 		}
@@ -2165,6 +2455,14 @@ func isSupportedModel(name string) bool {
 	if _, ok := modelMap[name]; ok {
 		return true
 	}
+	mLower := strings.ToLower(name)
+	if strings.HasPrefix(mLower, "claude-") ||
+		strings.HasPrefix(mLower, "gpt-") ||
+		strings.HasPrefix(mLower, "deepseek-") ||
+		strings.HasPrefix(mLower, "qwen-") ||
+		name == "simulated-rescue-model" {
+		return true
+	}
 	if _, err := os.Stat(filepath.Join(promptDir, name+".md")); err == nil {
 		return true
 	}
@@ -2173,6 +2471,14 @@ func isSupportedModel(name string) bool {
 
 func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version, x-opencode-session, X-Internal-Secret, X-Model-Name")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -2195,9 +2501,35 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid JSON payload"}}`))
+		return
+	}
+
+	msgsRaw, hasMsgs := rawMap["messages"]
+	if !hasMsgs {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"messages: Field required"}}`))
+		return
+	}
+
+	msgsList, isList := msgsRaw.([]interface{})
+	if !isList || len(msgsList) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"messages: should be non-empty array"}}`))
+		return
+	}
+
 	var payload AnthropicPayload
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		http.Error(w, `{"error":"Invalid Anthropic JSON payload"}`, http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid Anthropic JSON payload"}}`))
 		return
 	}
 
@@ -2228,7 +2560,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 
 	targetModel := modelMap[virtualModel]
 	if targetModel == "" {
-		targetModel = "x-preview-f-free"
+		targetModel = "muse-spark-1.3-contributor-free"
 	}
 
 	var openAIMessages []ChatMessage
@@ -2429,7 +2761,9 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 
 		reader := bufio.NewReader(resp.Body)
+		reasoningFilter := NewStreamingReasoningFilter(virtualModel)
 		outTokenCount := 0
+		stopReason := "end_turn"
 
 		for {
 			line, err := reader.ReadBytes('\n')
@@ -2450,6 +2784,10 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 								if dMap, ok := j["delta"].(map[string]interface{}); ok {
 									textDelta, _ = dMap["text"].(string)
 								}
+							} else if t == "content_block_delta" {
+								if dMap, ok := j["delta"].(map[string]interface{}); ok {
+									textDelta, _ = dMap["text"].(string)
+								}
 							}
 						} else if choices, ok := j["choices"].([]interface{}); ok && len(choices) > 0 {
 							if choiceMap, ok := choices[0].(map[string]interface{}); ok {
@@ -2461,18 +2799,25 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 						if textDelta != "" {
-							textDelta = cleanOutputText(textDelta, virtualModel)
-							outTokenCount += estimateTokens(textDelta)
-							deltaBytes, _ := json.Marshal(map[string]interface{}{
-								"type":  "content_block_delta",
-								"index": textIdx,
-								"delta": map[string]interface{}{
-									"type": "text_delta",
-									"text": textDelta,
-								},
-							})
-							w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
-							flusher.Flush()
+							cleanDelta := reasoningFilter.Feed(textDelta)
+							if cleanDelta != "" {
+								outTokenCount += estimateTokens(cleanDelta)
+								deltaBytes, _ := json.Marshal(map[string]interface{}{
+									"type":  "content_block_delta",
+									"index": textIdx,
+									"delta": map[string]interface{}{
+										"type": "text_delta",
+										"text": cleanDelta,
+									},
+								})
+								w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+								flusher.Flush()
+
+								if payload.MaxTokens > 0 && outTokenCount >= payload.MaxTokens {
+									stopReason = "max_tokens"
+									break
+								}
+							}
 						}
 					}
 				}
@@ -2482,10 +2827,24 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if remaining := reasoningFilter.Flush(); remaining != "" {
+			outTokenCount += estimateTokens(remaining)
+			deltaBytes, _ := json.Marshal(map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": textIdx,
+				"delta": map[string]interface{}{
+					"type": "text_delta",
+					"text": remaining,
+				},
+			})
+			w.Write([]byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", string(deltaBytes))))
+			flusher.Flush()
+		}
+
 		w.Write([]byte(fmt.Sprintf("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", textIdx)))
 		flusher.Flush()
 
-		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outTokenCount)
+		msgDeltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", stopReason, outTokenCount)
 		w.Write([]byte(msgDeltaEvent))
 
 		msgStopEvent := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
