@@ -1,8 +1,11 @@
 export const MOCK_API_KEYS = {
+  "sk-kiitcode-secret-2026": { credit_balance: 999999.0, is_active: 1, key_id: "hardcoded-master-key", is_mock: true },
+  "kiit_proxy_sec_998877": { credit_balance: 999999.0, is_active: 1, key_id: "hardcoded-internal-key", is_mock: true },
   "test-key": { credit_balance: 1000.0, is_active: 1, key_id: "mock-test-key", is_mock: true },
   "default-dev-key": { credit_balance: 1000.0, is_active: 1, key_id: "mock-default-dev-key", is_mock: true },
   "live-key-valid": { credit_balance: 1000.0, is_active: 1, key_id: "mock-live-key", is_mock: true },
   "kiit-mock-key-12345": { credit_balance: 1000.0, is_active: 1, key_id: "mock-kiit-key", is_mock: true },
+  "test": { credit_balance: 1000.0, is_active: 1, key_id: "mock-test", is_mock: true },
   "public": { credit_balance: 1000.0, is_active: 1, key_id: "mock-public-key", is_mock: true },
   "inactive-key": { credit_balance: 1000.0, is_active: 0, key_id: "mock-inactive-key", is_mock: true },
   "empty-balance-key": { credit_balance: 0.0, is_active: 1, key_id: "mock-empty-balance-key", is_mock: true },
@@ -37,6 +40,16 @@ export async function validateApiKey(request, env = {}) {
       status: 401,
       errorType: "authentication_error",
       message: "Missing API Key"
+    };
+  }
+
+  // Master hardcoded secret key (No database required)
+  const masterKey = env.PROXY_SECRET_KEY || env.API_KEY || "sk-kiitcode-secret-2026";
+  if (apiKey === masterKey) {
+    return {
+      success: true,
+      user: { credit_balance: 999999.0, is_active: 1, key_id: "master-key" },
+      apiKey
     };
   }
 

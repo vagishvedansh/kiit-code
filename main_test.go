@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"regexp"
 	"testing"
 )
@@ -344,6 +345,49 @@ func TestModelFidelity_NoMidwayDegradation(t *testing.T) {
 		if target == "" {
 			t.Errorf("model %q must have an upstream target", m)
 		}
+	}
+}
+
+func TestCheckRequestAuth(t *testing.T) {
+	initAuthKeys()
+
+	// 1. Missing auth
+	req1, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	authed, msg := checkRequestAuth(req1)
+	if authed || msg != "Missing API Key" {
+		t.Errorf("expected missing key, got %v (%s)", authed, msg)
+	}
+
+	// 2. Invalid auth
+	req2, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req2.Header.Set("Authorization", "Bearer invalid-token-12345")
+	authed, msg = checkRequestAuth(req2)
+	if authed || msg != "Invalid or disabled API Key" {
+		t.Errorf("expected invalid key, got %v (%s)", authed, msg)
+	}
+
+	// 3. Valid hardcoded master key via Bearer
+	req3, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req3.Header.Set("Authorization", "Bearer sk-kiitcode-secret-2026")
+	authed, msg = checkRequestAuth(req3)
+	if !authed {
+		t.Errorf("expected master key auth success, got %v (%s)", authed, msg)
+	}
+
+	// 4. Valid hardcoded master key via x-api-key
+	req4, _ := http.NewRequest("POST", "/v1/messages", nil)
+	req4.Header.Set("x-api-key", "sk-kiitcode-secret-2026")
+	authed, msg = checkRequestAuth(req4)
+	if !authed {
+		t.Errorf("expected x-api-key master key auth success, got %v (%s)", authed, msg)
+	}
+
+	// 5. Valid internal secret via X-Internal-Secret
+	req5, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req5.Header.Set("X-Internal-Secret", "kiit_proxy_sec_998877")
+	authed, msg = checkRequestAuth(req5)
+	if !authed {
+		t.Errorf("expected internal secret auth success, got %v (%s)", authed, msg)
 	}
 }
 

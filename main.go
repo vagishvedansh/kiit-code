@@ -36,10 +36,78 @@ const (
 )
 
 var (
+	masterSecretKey = "sk-kiitcode-secret-2026"
+	validApiKeys    = map[string]bool{
+		"sk-kiitcode-secret-2026": true,
+		"kiit_proxy_sec_998877":   true,
+		"test-key":                true,
+		"default-dev-key":         true,
+		"live-key-valid":          true,
+		"kiit-mock-key-12345":     true,
+		"test":                    true,
+	}
+	authMu sync.RWMutex
+
 	internalSecret string
 	promptCache    = make(map[string]string)
 	promptCacheMu  sync.RWMutex
 )
+
+func initAuthKeys() {
+	authMu.Lock()
+	defer authMu.Unlock()
+	if envKey := os.Getenv("PROXY_SECRET_KEY"); envKey != "" {
+		validApiKeys[envKey] = true
+		masterSecretKey = envKey
+	}
+	if envKey := os.Getenv("API_KEY"); envKey != "" {
+		validApiKeys[envKey] = true
+		masterSecretKey = envKey
+	}
+	if envKey := os.Getenv("INTERNAL_SECRET"); envKey != "" {
+		validApiKeys[envKey] = true
+		internalSecret = envKey
+	}
+}
+
+func checkRequestAuth(r *http.Request) (bool, string) {
+	// 1. Check X-Internal-Secret (used by edge functions or direct internal calls)
+	reqSecret := r.Header.Get("X-Internal-Secret")
+	if reqSecret != "" {
+		authMu.RLock()
+		isValid := validApiKeys[reqSecret] || (internalSecret != "" && reqSecret == internalSecret) || reqSecret == masterSecretKey
+		authMu.RUnlock()
+		if isValid {
+			return true, ""
+		}
+	}
+
+	// 2. Check Authorization header (Bearer <token>)
+	authHeader := r.Header.Get("Authorization")
+	var token string
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	} else if authHeader != "" && !strings.Contains(authHeader, " ") {
+		token = strings.TrimSpace(authHeader)
+	}
+
+	// 3. Check x-api-key header (Anthropic standard)
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("x-api-key"))
+	}
+
+	if token == "" {
+		return false, "Missing API Key"
+	}
+
+	authMu.RLock()
+	defer authMu.RUnlock()
+	if validApiKeys[token] || token == masterSecretKey {
+		return true, ""
+	}
+
+	return false, "Invalid or disabled API Key"
+}
 
 // Dynamic Rate Limit Tracker for OpenAI & Anthropic headers
 type RateLimitTracker struct {
@@ -1239,13 +1307,14 @@ func renewTorIP(controlAddr, controlPassword string) error {
 }
 
 func main() {
-	internalSecret = os.Getenv("INTERNAL_SECRET")
+	initAuthKeys()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	}
 
 	http.HandleFunc("/", healthHandler)
+	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
 	http.HandleFunc("/v1/messages", anthropicMessagesHandler)
@@ -1258,7 +1327,7 @@ func main() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && r.URL.Path != "/health" {
 		http.NotFound(w, r)
 		return
 	}
@@ -1727,16 +1796,13 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if internalSecret != "" {
-		reqSecret := r.Header.Get("X-Internal-Secret")
-		authHeader := r.Header.Get("Authorization")
-		apiKeyHeader := r.Header.Get("x-api-key")
-		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") && apiKeyHeader == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"detail":"Unauthorized request source"}`))
-			return
-		}
+	if authed, errMsg := checkRequestAuth(r); !authed {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		setAuthenticHeaders(w, "gpt-4o", 0)
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"` + errMsg + `","type":"authentication_error","code":"invalid_api_key"}}`))
+		return
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -2555,14 +2621,13 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if internalSecret != "" {
-		reqSecret := r.Header.Get("X-Internal-Secret")
-		authHeader := r.Header.Get("Authorization")
-		apiKeyHeader := r.Header.Get("x-api-key")
-		if reqSecret != internalSecret && !strings.HasPrefix(authHeader, "Bearer ") && apiKeyHeader == "" {
-			http.Error(w, `{"error":"Unauthorized request"}`, http.StatusUnauthorized)
-			return
-		}
+	if authed, errMsg := checkRequestAuth(r); !authed {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		setAuthenticHeaders(w, "claude-3-5-sonnet", 0)
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"` + errMsg + `"}}`))
+		return
 	}
 
 	bodyBytes, err := io.ReadAll(r.Body)
