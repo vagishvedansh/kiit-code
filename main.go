@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,42 @@ var (
 	promptCache    = make(map[string]string)
 	promptCacheMu  sync.RWMutex
 )
+
+func configureUpstreamRequest(
+	req *fhttp.Request,
+	targetURL string,
+	targetAuth string,
+	clientUA string,
+	sessionID string,
+	requestID string,
+	parentSession string,
+) {
+	req.Header.Set("Content-Type", "application/json")
+	if strings.Contains(targetURL, "opencode.ai") {
+		req.Header.Set("Authorization", "Bearer public")
+		if strings.HasPrefix(clientUA, "opencode/") {
+			req.Header.Set("User-Agent", clientUA)
+		} else {
+			req.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
+		}
+		req.Header.Set("x-opencode-client", "cli")
+		req.Header.Set("x-opencode-project", "global")
+		req.Header.Set("x-opencode-directory", "/home/vagish_arch")
+		req.Header.Set("x-opencode-session", sessionID)
+		req.Header.Set("x-opencode-request", requestID)
+		if parentSession != "" {
+			req.Header.Set("x-parent-session-id", parentSession)
+		}
+	} else {
+		if targetAuth != "" {
+			req.Header.Set("Authorization", targetAuth)
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	}
+	req.Header.Del("X-Forwarded-For")
+	req.Header.Del("X-Real-IP")
+	req.Header.Del("CF-Connecting-IP")
+}
 
 func initAuthKeys() {
 	authMu.Lock()
@@ -1308,6 +1345,9 @@ func renewTorIP(controlAddr, controlPassword string) error {
 
 func main() {
 	initAuthKeys()
+	// Prime pre-warmed Tor circuit pool in background immediately
+	go GetGlobalTorPool()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
@@ -1315,6 +1355,7 @@ func main() {
 
 	http.HandleFunc("/", healthHandler)
 	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/health/pool", poolHealthHandler)
 	http.HandleFunc("/v1/models", modelsHandler)
 	http.HandleFunc("/v1/chat/completions", proxyHandler)
 	http.HandleFunc("/v1/messages", anthropicMessagesHandler)
@@ -1333,7 +1374,16 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"running","engine":"go-kiitcode-core"}`))
+	stats := GetGlobalTorPool().Stats()
+	statsBytes, _ := json.Marshal(stats)
+	w.Write([]byte(`{"status":"running","engine":"go-kiitcode-core","tor_pool":` + string(statsBytes) + `}`))
+}
+
+func poolHealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	stats := GetGlobalTorPool().Stats()
+	json.NewEncoder(w).Encode(stats)
 }
 
 var modelCreationDates = map[string]int64{
@@ -2022,97 +2072,77 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 
 		currentBody, _ := json.Marshal(currentPayload)
 
-		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
+		clientUA := r.Header.Get("User-Agent")
+		parentSession := r.Header.Get("X-Parent-Session-Id")
 
-			upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
-			if errReq != nil {
-				cancel()
-				continue
-			}
-			upstreamReq.Header.Set("Content-Type", "application/json")
-
-			if strings.Contains(currentTargetURL, "opencode.ai") {
-				upstreamReq.Header.Set("Authorization", "Bearer public")
-				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
-					upstreamReq.Header.Set("User-Agent", clientUA)
-				} else {
-					upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
-				}
-				upstreamReq.Header.Set("x-opencode-client", "cli")
-				upstreamReq.Header.Set("x-opencode-project", "global")
-				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
-				upstreamReq.Header.Set("x-opencode-session", sessionID)
-				reqIDToUse := requestID
-				if attempt > 0 && r.Header.Get("X-Opencode-Request") == "" {
-					reqIDToUse = generateRequestID()
-				}
-				upstreamReq.Header.Set("x-opencode-request", reqIDToUse)
-
-				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
-					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
-				}
-			} else {
-				if currentTargetAuth != "" {
-					upstreamReq.Header.Set("Authorization", currentTargetAuth)
-				}
-				upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-			}
-
-			upstreamReq.Header.Del("X-Forwarded-For")
-			upstreamReq.Header.Del("X-Real-IP")
-			upstreamReq.Header.Del("CF-Connecting-IP")
-
-			var useClient tls_client.HttpClient
-			var clientToClose tls_client.HttpClient
+		for attempt := 0; attempt < 2; attempt++ {
 			if attempt == 0 {
-				useClient = sharedDirectClient
-			} else {
-				torClient, errTor := newIsolatedTorClient()
-				if errTor == nil && torClient != nil {
-					useClient = torClient
-					clientToClose = torClient
-				} else {
-					useClient = sharedTorClient
+				// Attempt 0: Fast path Direct connection (Chrome 131 TLS fingerprint)
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+				if errReq != nil {
+					cancel()
+					continue
 				}
-			}
+				configureUpstreamRequest(upstreamReq, currentTargetURL, currentTargetAuth, clientUA, sessionID, requestID, parentSession)
 
-			doReq := func() (*fhttp.Response, error) {
-				if attempt > 0 {
-					torSem <- struct{}{}
-					defer func() { <-torSem }()
-				}
-				return useClient.Do(upstreamReq)
-			}
-
-			resp, errDo = doReq()
-
-			if clientToClose != nil && (errDo != nil || resp == nil || resp.StatusCode != http.StatusOK) {
-				clientToClose.CloseIdleConnections()
-			}
-
-			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-				cancelFunc = cancel
-				break
-			}
-
-			if resp != nil {
-				code := resp.StatusCode
-				lastStatusCode = code
-				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, code, attempt)
-				resp.Body.Close()
-				cancel()
-				// Only break on unrecoverable client errors or missing endpoints
-				if code == 400 || code == 404 || code == 422 {
+				resp, errDo = sharedDirectClient.Do(upstreamReq)
+				if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
+					cancelFunc = cancel
 					break
 				}
-				// On 429, 403, 500, 502, 503, 504: do NOT break! Fallback to Tor (attempt 1 and 2) for the SAME model.
+
+				if resp != nil {
+					code := resp.StatusCode
+					lastStatusCode = code
+					resp.Body.Close()
+					cancel()
+					if code == 400 || code == 404 || code == 422 {
+						break
+					}
+				} else {
+					cancel()
+				}
 			} else {
-				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
+				// Attempt 1: Pre-warmed Tor circuit pool with hedged racing!
+				staggerDelay := 250 * time.Millisecond
+				if sStr := os.Getenv("HEDGE_STAGGER_MS"); sStr != "" {
+					if ms, err := strconv.Atoi(sStr); err == nil && ms > 0 {
+						staggerDelay = time.Duration(ms) * time.Millisecond
+					}
+				}
+
+				raceCtx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+				reqBuilder := func(ctx context.Context) (*fhttp.Request, error) {
+					req, err := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
+					if err != nil {
+						return nil, err
+					}
+					probeReqID := requestID
+					if r.Header.Get("X-Opencode-Request") == "" {
+						probeReqID = generateRequestID()
+					}
+					configureUpstreamRequest(req, currentTargetURL, currentTargetAuth, clientUA, sessionID, probeReqID, parentSession)
+					return req, nil
+				}
+
+				raceResult, errRace := ExecuteHedgedRace(raceCtx, GetGlobalTorPool(), reqBuilder, staggerDelay)
+				if errRace == nil && raceResult != nil && raceResult.Response != nil && raceResult.Response.StatusCode == http.StatusOK {
+					resp = raceResult.Response
+					errDo = nil
+					winnerCircuit := raceResult.Circuit
+					cancelFunc = func() {
+						raceResult.CancelFunc()
+						GetGlobalTorPool().Release(winnerCircuit)
+						cancel()
+					}
+					break
+				}
 				cancel()
-			}
-			if attempt > 0 {
-				tryRotateIP()
+				if raceResult != nil && raceResult.Response != nil {
+					lastStatusCode = raceResult.Response.StatusCode
+					raceResult.Response.Body.Close()
+				}
 			}
 		}
 
@@ -2770,97 +2800,77 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 			currentPayloadBytes, _ = json.Marshal(openAIReq)
 		}
 
-		for attempt := 0; attempt < 3; attempt++ {
-			ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
+		clientUA := r.Header.Get("User-Agent")
+		parentSession := r.Header.Get("X-Parent-Session-Id")
 
-			upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
-			if errReq != nil {
-				cancel()
-				continue
-			}
-			upstreamReq.Header.Set("Content-Type", "application/json")
-
-			if strings.Contains(currentTargetURL, "opencode.ai") {
-				upstreamReq.Header.Set("Authorization", "Bearer public")
-				if clientUA := r.Header.Get("User-Agent"); strings.HasPrefix(clientUA, "opencode/") {
-					upstreamReq.Header.Set("User-Agent", clientUA)
-				} else {
-					upstreamReq.Header.Set("User-Agent", "opencode/1.18.32 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14")
-				}
-				upstreamReq.Header.Set("x-opencode-client", "cli")
-				upstreamReq.Header.Set("x-opencode-project", "global")
-				upstreamReq.Header.Set("x-opencode-directory", "/home/vagish_arch")
-				upstreamReq.Header.Set("x-opencode-session", sessionID)
-				reqIDToUse := requestID
-				if attempt > 0 && r.Header.Get("X-Opencode-Request") == "" {
-					reqIDToUse = generateRequestID()
-				}
-				upstreamReq.Header.Set("x-opencode-request", reqIDToUse)
-
-				if reqParentSession := r.Header.Get("X-Parent-Session-Id"); reqParentSession != "" {
-					upstreamReq.Header.Set("x-parent-session-id", reqParentSession)
-				}
-			} else {
-				if currentTargetAuth != "" {
-					upstreamReq.Header.Set("Authorization", currentTargetAuth)
-				}
-				upstreamReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-			}
-
-			upstreamReq.Header.Del("X-Forwarded-For")
-			upstreamReq.Header.Del("X-Real-IP")
-			upstreamReq.Header.Del("CF-Connecting-IP")
-
-			var useClient tls_client.HttpClient
-			var clientToClose tls_client.HttpClient
+		for attempt := 0; attempt < 2; attempt++ {
 			if attempt == 0 {
-				useClient = sharedDirectClient
-			} else {
-				torClient, errTor := newIsolatedTorClient()
-				if errTor == nil && torClient != nil {
-					useClient = torClient
-					clientToClose = torClient
-				} else {
-					useClient = sharedTorClient
+				// Attempt 0: Fast path Direct connection (Chrome 131 TLS fingerprint)
+				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+				upstreamReq, errReq := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+				if errReq != nil {
+					cancel()
+					continue
 				}
-			}
+				configureUpstreamRequest(upstreamReq, currentTargetURL, currentTargetAuth, clientUA, sessionID, requestID, parentSession)
 
-			doReq := func() (*fhttp.Response, error) {
-				if attempt > 0 {
-					torSem <- struct{}{}
-					defer func() { <-torSem }()
-				}
-				return useClient.Do(upstreamReq)
-			}
-
-			resp, errDo = doReq()
-
-			if clientToClose != nil && (errDo != nil || resp == nil || resp.StatusCode != http.StatusOK) {
-				clientToClose.CloseIdleConnections()
-			}
-
-			if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
-				cancelFunc = cancel
-				break
-			}
-
-			if resp != nil {
-				code := resp.StatusCode
-				lastStatusCode = code
-				log.Printf("[WARN] Upstream %s HTTP %d on attempt %d", currentTarget, code, attempt)
-				resp.Body.Close()
-				cancel()
-				// Only break on unrecoverable client errors or missing endpoints
-				if code == 400 || code == 404 || code == 422 {
+				resp, errDo = sharedDirectClient.Do(upstreamReq)
+				if errDo == nil && resp != nil && resp.StatusCode == http.StatusOK {
+					cancelFunc = cancel
 					break
 				}
-				// On 429, 403, 500, 502, 503, 504: do NOT break! Fallback to Tor (attempt 1 and 2) for the SAME model.
+
+				if resp != nil {
+					code := resp.StatusCode
+					lastStatusCode = code
+					resp.Body.Close()
+					cancel()
+					if code == 400 || code == 404 || code == 422 {
+						break
+					}
+				} else {
+					cancel()
+				}
 			} else {
-				log.Printf("[WARN] Upstream %s connection error on attempt %d: %v", currentTarget, attempt, errDo)
+				// Attempt 1: Pre-warmed Tor circuit pool with hedged racing!
+				staggerDelay := 250 * time.Millisecond
+				if sStr := os.Getenv("HEDGE_STAGGER_MS"); sStr != "" {
+					if ms, err := strconv.Atoi(sStr); err == nil && ms > 0 {
+						staggerDelay = time.Duration(ms) * time.Millisecond
+					}
+				}
+
+				raceCtx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+				reqBuilder := func(ctx context.Context) (*fhttp.Request, error) {
+					req, err := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
+					if err != nil {
+						return nil, err
+					}
+					probeReqID := requestID
+					if r.Header.Get("X-Opencode-Request") == "" {
+						probeReqID = generateRequestID()
+					}
+					configureUpstreamRequest(req, currentTargetURL, currentTargetAuth, clientUA, sessionID, probeReqID, parentSession)
+					return req, nil
+				}
+
+				raceResult, errRace := ExecuteHedgedRace(raceCtx, GetGlobalTorPool(), reqBuilder, staggerDelay)
+				if errRace == nil && raceResult != nil && raceResult.Response != nil && raceResult.Response.StatusCode == http.StatusOK {
+					resp = raceResult.Response
+					errDo = nil
+					winnerCircuit := raceResult.Circuit
+					cancelFunc = func() {
+						raceResult.CancelFunc()
+						GetGlobalTorPool().Release(winnerCircuit)
+						cancel()
+					}
+					break
+				}
 				cancel()
-			}
-			if attempt > 0 {
-				tryRotateIP()
+				if raceResult != nil && raceResult.Response != nil {
+					lastStatusCode = raceResult.Response.StatusCode
+					raceResult.Response.Body.Close()
+				}
 			}
 		}
 

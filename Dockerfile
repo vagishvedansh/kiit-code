@@ -5,20 +5,19 @@ COPY go.mod ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /server .
 
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates tor
+RUN apk add --no-cache ca-certificates tor netcat-openbsd tini
 
 WORKDIR /app
 COPY --from=builder /server /app/server
 COPY --from=builder /app/prompts /app/prompts
+COPY torrc /etc/tor/torrc
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8787
 
-RUN echo "ControlPort 9051" > /etc/tor/torrc && \
-    echo "SOCKSPort 9050" >> /etc/tor/torrc && \
-    echo "CookieAuthentication 0" >> /etc/tor/torrc
-
-CMD tor & /app/server
+ENTRYPOINT ["/sbin/tini", "--", "/app/entrypoint.sh"]

@@ -1,0 +1,9 @@
+ControlPort 9051
+SOCKSPort 9050 IsolateSOCKSAuth
+CookieAuthentication 0
+CircuitBuildTimeout 10
+LearnCircuitBuildTimeout 0
+NumEntryGuards 6
+EnforceDistinctSubnets 1
+DataDirectory /tmp/tor_data
+Log notice stdout
