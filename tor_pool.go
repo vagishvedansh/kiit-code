@@ -777,7 +777,7 @@ func generateCircuitID() (string, string) {
 // defaultClientFactory constructs a Chrome_131 tls-client instance with proxy URL.
 func defaultClientFactory(proxyURL string) (tls_client.HttpClient, error) {
 	opts := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithTimeoutSeconds(300),
 		tls_client.WithClientProfile(profiles.Chrome_131),
 		tls_client.WithProxyUrl(proxyURL),
 	}

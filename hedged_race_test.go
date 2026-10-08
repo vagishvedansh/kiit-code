@@ -164,3 +164,66 @@ func TestExecuteHedgedRace_Probe1Slow_Probe2Overtakes(t *testing.T) {
 		t.Errorf("expected faster Probe 2 to overtake Probe 1, got Probe %d", res.ProbeID)
 	}
 }
+
+func TestExecuteHedgedRace_RetryOn503_SucceedsOnFreshCircuit(t *testing.T) {
+	// Round 1: Both Probe 1 and Probe 2 fail with HTTP 503
+	// Round 2: Probe 1 succeeds on fresh circuit with HTTP 200 OK
+	var roundCounter int64
+	pool := NewTorCircuitPool("socks5://127.0.0.1:9050", 6, 12)
+	pool.SetWarmupTimeout(50 * time.Millisecond)
+	pool.SetProbeTimeout(50 * time.Millisecond)
+
+	var ipCounter int64
+	pool.SetProbeFunc(func(ctx context.Context, client tls_client.HttpClient) (string, int64, error) {
+		pIdx := atomic.AddInt64(&ipCounter, 1)
+		return fmt.Sprintf("198.51.100.%d", pIdx), 10, nil
+	})
+
+	pool.SetClientFactory(func(proxyURL string) (tls_client.HttpClient, error) {
+		baseClient, _ := tls_client.NewHttpClient(tls_client.NewNoopLogger())
+		return &mockRaceHttpClient{
+			HttpClient: baseClient,
+			doFunc: func(req *fhttp.Request) (*fhttp.Response, error) {
+				currentRound := atomic.AddInt64(&roundCounter, 1)
+				// First 2 requests (Round 1: probe 1 & probe 2) return 503
+				if currentRound <= 2 {
+					return &fhttp.Response{
+						StatusCode: http.StatusServiceUnavailable,
+						Body:       io.NopCloser(bytes.NewBufferString(`{"error":"high load"}`)),
+					}, nil
+				}
+				// Next request (Round 2 on fresh circuit) succeeds with 200
+				return &fhttp.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`data: {"model":"muse-spark-1.3-contributor-free"}`)),
+				}, nil
+			},
+		}, nil
+	})
+	defer pool.Close()
+
+	// Wait for pool to prime
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	reqBuilder := func(ctx context.Context) (*fhttp.Request, error) {
+		return fhttp.NewRequestWithContext(ctx, "POST", "http://example.com", bytes.NewBufferString("{}"))
+	}
+
+	res, err := ExecuteHedgedRace(ctx, pool, reqBuilder, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected retry loop to succeed on Round 2, got error: %v", err)
+	}
+	defer res.Response.Body.Close()
+	defer pool.Release(res.Circuit)
+
+	if res.Response.StatusCode != http.StatusOK {
+		t.Errorf("expected HTTP 200 OK after circuit rotation, got %d", res.Response.StatusCode)
+	}
+	// Verify that faulted circuits were evicted and exit IPs tainted
+	if pool.GetReputationTracker().TaintedCount() < 2 {
+		t.Errorf("expected at least 2 tainted exit IPs from Round 1, got %d", pool.GetReputationTracker().TaintedCount())
+	}
+}

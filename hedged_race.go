@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,11 +25,79 @@ type HedgedRaceResult struct {
 // RequestBuilderFunc builds a fresh clone of the fhttp.Request for each probe.
 type RequestBuilderFunc func(ctx context.Context) (*fhttp.Request, error)
 
-// ExecuteHedgedRace executes concurrent hedged racing across candidate Tor circuits.
-// It dispatches Probe 1 on Circuit A immediately, and Probe 2 on Circuit B after staggerDelay
-// (or immediately if Probe 1 fails early). The first healthy HTTP 200 response wins.
-// The losing probe is promptly cancelled and its resources released.
+// DefaultMaxCircuitRetries defines the maximum retry attempts across candidate Tor circuits.
+const DefaultMaxCircuitRetries = 3
+
+// ExecuteHedgedRace executes concurrent hedged racing with automatic multi-circuit retries on 503/429.
 func ExecuteHedgedRace(
+	ctx context.Context,
+	pool *TorCircuitPool,
+	requestBuilder RequestBuilderFunc,
+	staggerDelay time.Duration,
+) (*HedgedRaceResult, error) {
+	return ExecuteResilientHedgedRace(ctx, pool, requestBuilder, staggerDelay, DefaultMaxCircuitRetries)
+}
+
+// ExecuteResilientHedgedRace attempts hedged racing across candidate Tor circuits up to maxAttempts times.
+// When a circuit encounters 503 or 429, it evicts/taints the faulted exit IP and immediately rotates
+// to fresh pre-warmed circuits from the pool.
+func ExecuteResilientHedgedRace(
+	ctx context.Context,
+	pool *TorCircuitPool,
+	requestBuilder RequestBuilderFunc,
+	staggerDelay time.Duration,
+	maxAttempts int,
+) (*HedgedRaceResult, error) {
+	if pool == nil {
+		return nil, errors.New("tor circuit pool is nil")
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMaxCircuitRetries
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		res, err := executeSingleHedgedRaceRound(ctx, pool, requestBuilder, staggerDelay)
+		if err == nil && res != nil && res.Response != nil && res.Response.StatusCode == http.StatusOK {
+			return res, nil
+		}
+
+		lastErr = err
+
+		// If error is non-retryable (client error 400, 401, 403, 404, 422), do not retry across more circuits
+		if err != nil && isNonRetryableStatus(err.Error()) {
+			return nil, err
+		}
+
+		// If more retry attempts remain, briefly yield/backoff to allow replenishment worker
+		if attempt < maxAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt*50) * time.Millisecond):
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("all %d circuit retry attempts failed: %w", maxAttempts, lastErr)
+}
+
+func isNonRetryableStatus(errMsg string) bool {
+	return strings.Contains(errMsg, "status_400") ||
+		strings.Contains(errMsg, "status_401") ||
+		strings.Contains(errMsg, "status_403") ||
+		strings.Contains(errMsg, "status_404") ||
+		strings.Contains(errMsg, "status_422")
+}
+
+// executeSingleHedgedRaceRound executes a single round of hedged racing across candidate Tor circuits.
+func executeSingleHedgedRaceRound(
 	ctx context.Context,
 	pool *TorCircuitPool,
 	requestBuilder RequestBuilderFunc,

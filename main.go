@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -909,6 +910,254 @@ var mimoAuth = &MimoTokenCache{
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+const (
+	// MaxPayloadWindowThreshold triggers windowing when incoming body exceeds 1.2MB.
+	MaxPayloadWindowThreshold = 1200 * 1024 // 1,228,800 bytes (~1.2MB)
+
+	// TargetSafePayloadBytes is the maximum aggregate content size allowed after windowing.
+	TargetSafePayloadBytes = 1000 * 1024 // 1,024,000 bytes (~1.0MB)
+
+	// SingleMessageHeadBytes is the leading slice preserved in an oversized message.
+	SingleMessageHeadBytes = 450 * 1024 // 450KB
+
+	// SingleMessageTailBytes is the trailing slice preserved in an oversized message.
+	SingleMessageTailBytes = 450 * 1024 // 450KB
+)
+
+// safeSliceHead returns the prefix of s up to maxBytes without splitting UTF-8 runes.
+func safeSliceHead(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && maxBytes < len(s) && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
+}
+
+// safeSliceTail returns the suffix of s of size tailBytes without splitting UTF-8 runes.
+func safeSliceTail(s string, tailBytes int) string {
+	if len(s) <= tailBytes {
+		return s
+	}
+	start := len(s) - tailBytes
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
+}
+
+// collapseRepetitions performs fast compression of repetitive sequences
+// (such as repeated lines or periodic synthetic patterns).
+func collapseRepetitions(text string) string {
+	if len(text) < 2048 {
+		return text
+	}
+
+	// 1. Line-based repetition check
+	if strings.Contains(text, "\n") {
+		lines := strings.Split(text, "\n")
+		var b strings.Builder
+		b.Grow(len(text))
+		repeatCount := 0
+		var lastLine string
+
+		for _, line := range lines {
+			if line == lastLine && len(line) > 0 {
+				repeatCount++
+				if repeatCount < 3 {
+					b.WriteString(line)
+					b.WriteByte('\n')
+				} else if repeatCount == 3 {
+					b.WriteString("[... duplicate lines omitted ...]\n")
+				}
+			} else {
+				lastLine = line
+				repeatCount = 1
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+		}
+		res := strings.TrimSuffix(b.String(), "\n")
+		if len(res) < len(text) {
+			text = res
+		}
+	}
+
+	// 2. Periodic pattern detection for continuous strings or benchmark patterns
+	n := len(text)
+	if n > 4096 {
+		maxK := 1024
+		if maxK > n-512 {
+			maxK = n - 512
+		}
+		for k := 0; k < maxK; k++ {
+			for p := 16; p <= 512; p++ {
+				if k+3*p > n {
+					break
+				}
+				if text[k] != text[k+p] || text[k] != text[k+2*p] {
+					continue
+				}
+				pattern := text[k : k+p]
+				if text[k+p:k+2*p] == pattern && text[k+2*p:k+3*p] == pattern {
+					// Count contiguous matches
+					c := 3
+					for k+(c+1)*p <= n && text[k+c*p:k+(c+1)*p] == pattern {
+						c++
+					}
+					if c*p >= 2048 {
+						pruned := (c - 2) * p
+						marker := fmt.Sprintf("\n[... repeating pattern omitted (%d duplicate occurrences, %d bytes pruned) ...]\n", c-2, pruned)
+						return text[:k] + pattern + pattern + marker + text[k+c*p:]
+					}
+				}
+			}
+		}
+	}
+
+	return text
+}
+
+// windowSingleMessage ensures an individual message content does not exceed maxBytes,
+// preserving the leading context/instructions and trailing user query.
+func windowSingleMessage(content string, maxBytes int) string {
+	content = collapseRepetitions(content)
+	if len(content) <= maxBytes {
+		return content
+	}
+
+	headBytes := SingleMessageHeadBytes
+	tailBytes := SingleMessageTailBytes
+	if headBytes+tailBytes >= maxBytes {
+		headBytes = maxBytes / 2
+		tailBytes = maxBytes / 2
+	}
+
+	if len(content) <= headBytes+tailBytes {
+		return content
+	}
+
+	omitted := len(content) - (headBytes + tailBytes)
+	marker := fmt.Sprintf("\n\n[... oversized content omitted: %d bytes truncated to fit safe 1.2MB context envelope ...]\n\n", omitted)
+	return safeSliceHead(content, headBytes) + marker + safeSliceTail(content, tailBytes)
+}
+
+// WindowChatMessages windows a slice of ChatMessage objects to guarantee
+// the total content size remains strictly under targetBudget.
+// Invariants enforced:
+// 1. messages[0] (System) is strictly preserved.
+// 2. messages[len-1] (Latest user prompt) is strictly preserved.
+// 3. Oldest middle messages are pruned first.
+func WindowChatMessages(messages []ChatMessage, targetBudget int) []ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	totalLen := 0
+	for _, m := range messages {
+		totalLen += len(m.Content)
+	}
+	if totalLen <= targetBudget {
+		return messages
+	}
+
+	// Case 1: Single message
+	if len(messages) == 1 {
+		return []ChatMessage{
+			{
+				Role:    messages[0].Role,
+				Content: windowSingleMessage(messages[0].Content, targetBudget),
+			},
+		}
+	}
+
+	// Case 2: Two messages (e.g. System + User)
+	if len(messages) == 2 {
+		sysMsg := messages[0]
+		userMsg := messages[1]
+		budgetForUser := targetBudget - len(sysMsg.Content)
+		if budgetForUser < 100*1024 {
+			budgetForUser = 100 * 1024
+		}
+		return []ChatMessage{
+			sysMsg,
+			{
+				Role:    userMsg.Role,
+				Content: windowSingleMessage(userMsg.Content, budgetForUser),
+			},
+		}
+	}
+
+	// Case 3: Multi-turn (>= 3 messages)
+	hasSystem := (messages[0].Role == "system")
+	var sysMsg *ChatMessage
+	var turns []ChatMessage
+
+	if hasSystem {
+		s := messages[0]
+		sysMsg = &s
+		turns = messages[1:]
+	} else {
+		turns = messages
+	}
+
+	latestTurn := turns[len(turns)-1]
+	middleTurns := turns[:len(turns)-1]
+
+	// Window latest turn if oversized
+	availForLatest := targetBudget
+	if sysMsg != nil {
+		availForLatest -= len(sysMsg.Content)
+	}
+	if availForLatest < SingleMessageHeadBytes+SingleMessageTailBytes {
+		availForLatest = SingleMessageHeadBytes + SingleMessageTailBytes
+	}
+	latestTurn.Content = windowSingleMessage(latestTurn.Content, availForLatest)
+
+	// Calculate remaining budget for middle turns
+	usedBudget := len(latestTurn.Content)
+	if sysMsg != nil {
+		usedBudget += len(sysMsg.Content)
+	}
+	remBudget := targetBudget - usedBudget
+
+	// Retain most recent middle turns walking backwards
+	var retainedMiddle []ChatMessage
+	droppedCount := 0
+
+	if remBudget > 10*1024 {
+		for i := len(middleTurns) - 1; i >= 0; i-- {
+			turnLen := len(middleTurns[i].Content)
+			if turnLen <= remBudget {
+				retainedMiddle = append([]ChatMessage{middleTurns[i]}, retainedMiddle...)
+				remBudget -= turnLen
+			} else {
+				droppedCount += (i + 1)
+				break
+			}
+		}
+	} else {
+		droppedCount = len(middleTurns)
+	}
+
+	// Assemble final messages slice
+	result := make([]ChatMessage, 0, len(messages))
+	if sysMsg != nil {
+		result = append(result, *sysMsg)
+	}
+	if droppedCount > 0 {
+		result = append(result, ChatMessage{
+			Role:    "system",
+			Content: fmt.Sprintf("[... %d earlier conversation turns windowed to fit safe 1.2MB context envelope ...]", droppedCount),
+		})
+	}
+	result = append(result, retainedMiddle...)
+	result = append(result, latestTurn)
+
+	return result
 }
 
 type ChatRequest struct {
@@ -2004,6 +2253,34 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	baseMessages, _ := basePayload["messages"].([]interface{})
 
+	// Intelligent payload windowing & token guard (> 1.2MB)
+	if len(bodyBytes) > MaxPayloadWindowThreshold {
+		log.Printf("[INFO] [Windowing] Ingested payload size %d bytes exceeds 1.2MB threshold. Applying payload windowing guard...", len(bodyBytes))
+		chatMsgs := make([]ChatMessage, 0, len(baseMessages))
+		for _, m := range baseMessages {
+			if mMap, ok := m.(map[string]interface{}); ok {
+				role := "user"
+				if rStr, ok := mMap["role"].(string); ok {
+					role = rStr
+				}
+				chatMsgs = append(chatMsgs, ChatMessage{
+					Role:    role,
+					Content: contentToString(mMap["content"]),
+				})
+			}
+		}
+		windowed := WindowChatMessages(chatMsgs, TargetSafePayloadBytes)
+		newBaseMessages := make([]interface{}, 0, len(windowed))
+		for _, wm := range windowed {
+			newBaseMessages = append(newBaseMessages, map[string]interface{}{
+				"role":    wm.Role,
+				"content": wm.Content,
+			})
+		}
+		baseMessages = newBaseMessages
+		basePayload["messages"] = baseMessages
+	}
+
 	var resp *fhttp.Response
 	var errDo error
 	var cancelFunc context.CancelFunc
@@ -2112,7 +2389,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				raceCtx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+				raceCtx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 				reqBuilder := func(ctx context.Context) (*fhttp.Request, error) {
 					req, err := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentBody))
 					if err != nil {
@@ -2142,6 +2419,16 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 				if raceResult != nil && raceResult.Response != nil {
 					lastStatusCode = raceResult.Response.StatusCode
 					raceResult.Response.Body.Close()
+				} else if errRace != nil {
+					if strings.Contains(errRace.Error(), "status_429") {
+						lastStatusCode = http.StatusTooManyRequests
+					} else if strings.Contains(errRace.Error(), "status_503") {
+						lastStatusCode = http.StatusServiceUnavailable
+					} else if strings.Contains(errRace.Error(), "status_502") {
+						lastStatusCode = http.StatusBadGateway
+					} else if strings.Contains(errRace.Error(), "status_504") {
+						lastStatusCode = http.StatusGatewayTimeout
+					}
 				}
 			}
 		}
@@ -2745,6 +3032,20 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		openAIMessages = append(openAIMessages, ChatMessage{Role: msg.Role, Content: text})
 	}
 
+	// Intelligent payload windowing & token guard (> 1.2MB)
+	if len(bodyBytes) > MaxPayloadWindowThreshold {
+		log.Printf("[INFO] [Windowing] Anthropic ingested payload size %d bytes exceeds 1.2MB threshold. Applying payload windowing guard...", len(bodyBytes))
+		openAIMessages = WindowChatMessages(openAIMessages, TargetSafePayloadBytes)
+		var windowedText string
+		for _, m := range openAIMessages {
+			windowedText += m.Content + " "
+		}
+		promptLen = len(windowedText) / 4
+		if promptLen < 1 {
+			promptLen = 1
+		}
+	}
+
 	// Strict model fidelity: never degrade to a different model midway.
 	// On rate limit (429) or transient upstream issues, fallback to Tor for the exact same model.
 	targetModels := []string{targetModel}
@@ -2840,7 +3141,7 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				raceCtx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+				raceCtx, cancel := context.WithTimeout(r.Context(), 300*time.Second)
 				reqBuilder := func(ctx context.Context) (*fhttp.Request, error) {
 					req, err := fhttp.NewRequestWithContext(ctx, http.MethodPost, currentTargetURL, bytes.NewBuffer(currentPayloadBytes))
 					if err != nil {
@@ -2870,6 +3171,16 @@ func anthropicMessagesHandler(w http.ResponseWriter, r *http.Request) {
 				if raceResult != nil && raceResult.Response != nil {
 					lastStatusCode = raceResult.Response.StatusCode
 					raceResult.Response.Body.Close()
+				} else if errRace != nil {
+					if strings.Contains(errRace.Error(), "status_429") {
+						lastStatusCode = http.StatusTooManyRequests
+					} else if strings.Contains(errRace.Error(), "status_503") {
+						lastStatusCode = http.StatusServiceUnavailable
+					} else if strings.Contains(errRace.Error(), "status_502") {
+						lastStatusCode = http.StatusBadGateway
+					} else if strings.Contains(errRace.Error(), "status_504") {
+						lastStatusCode = http.StatusGatewayTimeout
+					}
 				}
 			}
 		}

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -388,6 +390,135 @@ func TestCheckRequestAuth(t *testing.T) {
 	authed, msg = checkRequestAuth(req5)
 	if !authed {
 		t.Errorf("expected internal secret auth success, got %v (%s)", authed, msg)
+	}
+}
+
+func TestCollapseRepetitions_LineRepetition(t *testing.T) {
+	// Construct 100 identical lines (> 2048 bytes)
+	line := "This is an identical repeating log line in the prompt context.\n"
+	var sb strings.Builder
+	for i := 0; i < 100; i++ {
+		sb.WriteString(line)
+	}
+	original := sb.String()
+	collapsed := collapseRepetitions(original)
+
+	if len(collapsed) >= len(original) {
+		t.Fatalf("expected collapsed text to be smaller than %d bytes, got %d", len(original), len(collapsed))
+	}
+	if !strings.Contains(collapsed, "[... duplicate lines omitted ...]") {
+		t.Errorf("expected duplicate lines marker in collapsed output")
+	}
+	// Verify lines under 2048 are untouched
+	short := "Line 1\nLine 1\nLine 1\n"
+	if got := collapseRepetitions(short); got != short {
+		t.Errorf("expected short text to be unchanged, got %q", got)
+	}
+}
+
+func TestCollapseRepetitions_PeriodicPattern(t *testing.T) {
+	// Synthetic benchmark pattern: instruction + 85-byte base string repeated 100 times
+	instruction := "Acknowledge receipt and summarize in one sentence: "
+	basePattern := "The quick brown fox jumps over the lazy dog. 0123456789. AI proxy low-latency test. "
+	var sb strings.Builder
+	sb.WriteString(instruction)
+	for i := 0; i < 100; i++ {
+		sb.WriteString(basePattern)
+	}
+	original := sb.String()
+	collapsed := collapseRepetitions(original)
+
+	if len(collapsed) >= len(original) {
+		t.Fatalf("expected collapsed text to be smaller than %d bytes, got %d", len(original), len(collapsed))
+	}
+	if !strings.HasPrefix(collapsed, instruction) {
+		t.Errorf("expected prompt instruction to be preserved at head")
+	}
+	if !strings.Contains(collapsed, "[... repeating pattern omitted") {
+		t.Errorf("expected repeating pattern marker in output")
+	}
+}
+
+func TestWindowSingleMessage(t *testing.T) {
+	// 1. Message under budget
+	under := "Short content under budget"
+	if got := windowSingleMessage(under, 1000); got != under {
+		t.Errorf("expected under-budget content to be unchanged")
+	}
+
+	// 2. Oversized message (e.g. 2MB non-repeating random-ish text)
+	headMarker := "=== IMPORTANT HEADER INSTRUCTIONS ==="
+	tailMarker := "=== IMPORTANT CLOSING QUESTION ==="
+	var sb strings.Builder
+	sb.WriteString(headMarker)
+	sb.WriteString("\n")
+	for i := 0; i < 40000; i++ {
+		sb.WriteString(fmt.Sprintf("unique data row line #%06d: some descriptive text here\n", i))
+	}
+	sb.WriteString(tailMarker)
+	oversized := sb.String()
+
+	budget := 500 * 1024 // 500KB budget
+	windowed := windowSingleMessage(oversized, budget)
+
+	if len(windowed) > budget+1024 {
+		t.Fatalf("expected windowed message <= %d bytes, got %d", budget+1024, len(windowed))
+	}
+	if !strings.Contains(windowed, headMarker) {
+		t.Errorf("expected head marker %q to be preserved in windowed message", headMarker)
+	}
+	if !strings.Contains(windowed, tailMarker) {
+		t.Errorf("expected tail marker %q to be preserved in windowed message", tailMarker)
+	}
+	if !strings.Contains(windowed, "[... oversized content omitted:") {
+		t.Errorf("expected omission marker in windowed message")
+	}
+}
+
+func TestWindowChatMessages(t *testing.T) {
+	sysMsg := ChatMessage{Role: "system", Content: "You are a helpful assistant with system identity guard."}
+	latestUser := ChatMessage{Role: "user", Content: "Final prompt: Please answer the query based on earlier turns."}
+
+	// Case 1: Under budget
+	msgs := []ChatMessage{sysMsg, latestUser}
+	windowed := WindowChatMessages(msgs, 1000*1024)
+	if len(windowed) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(windowed))
+	}
+
+	// Case 2: Multi-turn chat history exceeding budget
+	allMsgs := []ChatMessage{sysMsg}
+	for i := 1; i <= 50; i++ {
+		allMsgs = append(allMsgs, ChatMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("Turn #%d: %s", i, strings.Repeat("History content block. ", 2000)),
+		})
+	}
+	allMsgs = append(allMsgs, latestUser)
+
+	budget := 500 * 1024 // 500KB budget
+	result := WindowChatMessages(allMsgs, budget)
+
+	// Verify invariants:
+	// Invariant 1: System prompt is preserved
+	if result[0].Role != "system" || result[0].Content != sysMsg.Content {
+		t.Errorf("system prompt was not preserved at index 0: got %+v", result[0])
+	}
+	// Invariant 2: Latest user prompt is preserved
+	lastIdx := len(result) - 1
+	if result[lastIdx].Role != "user" || result[lastIdx].Content != latestUser.Content {
+		t.Errorf("latest user prompt was not preserved at final index: got %+v", result[lastIdx])
+	}
+	// Invariant 3: Intermediate messages are pruned, total size is within budget
+	totalSize := 0
+	for _, m := range result {
+		totalSize += len(m.Content)
+	}
+	if totalSize > budget+1024 {
+		t.Errorf("expected total size <= %d, got %d", budget+1024, totalSize)
+	}
+	if len(result) >= len(allMsgs) {
+		t.Errorf("expected middle turns to be pruned, got %d messages out of %d", len(result), len(allMsgs))
 	}
 }
 
